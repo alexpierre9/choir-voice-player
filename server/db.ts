@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -85,4 +85,54 @@ export async function getUser(id: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// Sheet Music Database Functions
+
+export async function createSheetMusic(data: InsertSheetMusic): Promise<SheetMusic> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  await db.insert(sheetMusic).values(data);
+  
+  const result = await db.select().from(sheetMusic).where(eq(sheetMusic.id, data.id!)).limit(1);
+  return result[0];
+}
+
+export async function updateSheetMusic(id: string, data: Partial<InsertSheetMusic>): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  await db.update(sheetMusic).set(data).where(eq(sheetMusic.id, id));
+}
+
+export async function getSheetMusic(id: string): Promise<SheetMusic | undefined> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  const result = await db.select().from(sheetMusic).where(eq(sheetMusic.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserSheetMusic(userId: string): Promise<SheetMusic[]> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  return await db.select().from(sheetMusic).where(eq(sheetMusic.userId, userId));
+}
+
+export async function deleteSheetMusic(id: string): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database not available");
+  }
+
+  await db.delete(sheetMusic).where(eq(sheetMusic.id, id));
+}
+
