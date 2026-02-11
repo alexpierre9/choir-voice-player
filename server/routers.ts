@@ -11,7 +11,7 @@ import {
   getUserSheetMusic,
   deleteSheetMusic 
 } from "./db";
-import { storagePut, storageGet } from "./storage";
+import { storagePut, storageGet, storageDelete } from "./storage";
 import FormData from "form-data";
 import fetch from "node-fetch";
 
@@ -190,7 +190,41 @@ export const appRouter = router({
           throw new Error("Unauthorized");
         }
         
-        // TODO: Delete S3 files
+        // Delete S3 files asynchronously (don't block on failures)
+        const deletePromises: Promise<void>[] = [];
+        
+        if (sheet.originalFileKey) {
+          deletePromises.push(
+            storageDelete(sheet.originalFileKey).catch(err => {
+              console.error(`Failed to delete original file ${sheet.originalFileKey}:`, err);
+            })
+          );
+        }
+        
+        if (sheet.musicxmlKey) {
+          deletePromises.push(
+            storageDelete(sheet.musicxmlKey).catch(err => {
+              console.error(`Failed to delete musicxml ${sheet.musicxmlKey}:`, err);
+            })
+          );
+        }
+        
+        if (sheet.midiFileKeys) {
+          const midiKeys = sheet.midiFileKeys as Record<string, string>;
+          for (const voiceType of Object.keys(midiKeys)) {
+            const midiKey = midiKeys[voiceType];
+            if (midiKey) {
+              deletePromises.push(
+                storageDelete(midiKey).catch(err => {
+                  console.error(`Failed to delete midi file ${midiKey}:`, err);
+                })
+              );
+            }
+          }
+        }
+        
+        // Wait for all deletions to complete (with individual error handling)
+        await Promise.all(deletePromises);
         
         await deleteSheetMusic(input.id);
         
