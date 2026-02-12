@@ -78,6 +78,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   return {
     ...state,
+    loading: meQuery.isLoading || logoutMutation.isPending,
     refresh: () => meQuery.refetch(),
     logout,
   };

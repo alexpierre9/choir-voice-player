@@ -15,6 +15,7 @@ import {
 import { Loader2, ArrowLeft, Music } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 const VOICE_OPTIONS = [
   { value: "soprano", label: "Soprano" },
@@ -25,6 +26,7 @@ const VOICE_OPTIONS = [
 ];
 
 export default function SheetDetail() {
+  const { loading: authLoading } = useAuth({ redirectOnUnauthenticated: true });
   const [, params] = useRoute("/sheet/:id");
   const [, setLocation] = useLocation();
   const sheetId = params?.id || "";
@@ -35,8 +37,8 @@ export default function SheetDetail() {
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
     { id: sheetId },
-    { 
-      enabled: !!sheetId, 
+    {
+      enabled: !!sheetId,
       refetchInterval: (query) => {
         // Poll every 3 seconds if still processing to reduce backend load
         return query.state.data?.status === "processing" ? 3000 : false;
@@ -47,6 +49,15 @@ export default function SheetDetail() {
       gcTime: 300000, // Keep unused data for 5 minutes
     }
   );
+
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   const updateVoicesMutation = trpc.sheetMusic.updateVoiceAssignments.useMutation({
     onSuccess: () => {
