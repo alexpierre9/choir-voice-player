@@ -40,6 +40,16 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
+  --color-success-light: var(--success-light);
+  --color-warning: var(--warning);
+  --color-warning-light: var(--warning-light);
+  --color-info: var(--info);
+  --color-info-light: var(--info-light);
+  --color-error: var(--error);
+  --color-error-light: var(--error-light);
+  --color-purple: var(--purple);
+  --color-purple-light: var(--purple-light);
 }
 
 :root {
@@ -76,6 +86,16 @@
   --sidebar-accent-foreground: oklch(0.141 0.005 285.823);
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.623 0.214 259.815);
+  --success: var(--color-green-600);
+  --success-light: var(--color-green-100);
+  --warning: var(--color-amber-600);
+  --warning-light: var(--color-amber-100);
+  --info: var(--color-blue-600);
+  --info-light: var(--color-blue-100);
+  --error: var(--color-red-600);
+  --error-light: var(--color-red-100);
+  --purple: var(--color-purple-600);
+  --purple-light: var(--color-purple-100);
 }
 
 .dark {
@@ -111,6 +131,16 @@
   --sidebar-accent-foreground:  oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.488 0.243 264.376);
+  --success: var(--color-green-400);
+  --success-light: var(--color-green-900);
+  --warning: var(--color-amber-400);
+  --warning-light: var(--color-amber-900);
+  --info: var(--color-blue-400);
+  --info-light: var(--color-blue-900);
+  --error: var(--color-red-400);
+  --error-light: var(--color-red-900);
+  --purple: var(--color-purple-400);
+  --purple-light: var(--color-purple-900);
 }
 
 @layer base {
@@ -130,6 +160,18 @@
   input[type="checkbox"]:not(:disabled),
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
+  }
+  
+  /* Enhanced focus indicators */
+  *:focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+  
+  /* Specific focus states for common elements */
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible {
+    @apply ring-2 ring-ring ring-offset-2;
   }
 }
 

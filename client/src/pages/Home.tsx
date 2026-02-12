@@ -29,7 +29,7 @@ export default function Home() {
             Upload sheet music and hear each SATB voice part individually. Perfect
             for choir practice, learning, and arrangement analysis.
           </p>
-          
+
           <Button
             size="lg"
             onClick={() => setLocation("/upload")}
@@ -43,8 +43,8 @@ export default function Home() {
         {/* Features */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
           <Card className="p-6 text-center">
-            <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Upload className="h-8 w-8 text-blue-600" />
+            <div className="bg-info-light dark:bg-info-light/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Upload className="h-8 w-8 text-info dark:text-info" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Easy Upload</h3>
             <p className="text-gray-600">
@@ -54,8 +54,8 @@ export default function Home() {
           </Card>
 
           <Card className="p-6 text-center">
-            <div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Users className="h-8 w-8 text-green-600" />
+            <div className="bg-success-light dark:bg-success-light/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Users className="h-8 w-8 text-success dark:text-success" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Auto Voice Detection</h3>
             <p className="text-gray-600">
@@ -65,8 +65,8 @@ export default function Home() {
           </Card>
 
           <Card className="p-6 text-center">
-            <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Volume2 className="h-8 w-8 text-purple-600" />
+            <div className="bg-purple-light dark:bg-purple-light/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Volume2 className="h-8 w-8 text-purple dark:text-purple" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Individual Playback</h3>
             <p className="text-gray-600">
@@ -82,7 +82,7 @@ export default function Home() {
             <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
               Your Recent Uploads
             </h3>
-            
+
             {userSheets && userSheets.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {userSheets.slice(0, 6).map((sheet) => (
@@ -100,17 +100,17 @@ export default function Home() {
                         </p>
                         <div className="mt-2">
                           {sheet.status === "ready" && (
-                            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded dark:bg-green-900/30 dark:text-green-400">
+                            <span className="text-xs bg-success-light text-success px-2 py-1 rounded dark:bg-success-light/30 dark:text-success">
                               Ready
                             </span>
                           )}
                           {sheet.status === "processing" && (
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded dark:bg-blue-900/30 dark:text-blue-400">
+                            <span className="text-xs bg-info-light text-info px-2 py-1 rounded dark:bg-info-light/30 dark:text-info">
                               Processing...
                             </span>
                           )}
                           {sheet.status === "error" && (
-                            <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded dark:bg-red-900/30 dark:text-red-400">
+                            <span className="text-xs bg-error-light text-error px-2 py-1 rounded dark:bg-error-light/30 dark:text-error">
                               Error
                             </span>
                           )}
@@ -123,7 +123,7 @@ export default function Home() {
             ) : (
               <Card className="p-12 text-center dark:bg-gray-800 dark:border-gray-700">
                 <div className="mx-auto max-w-md">
-                  <Music className="h-16 w-16 text-blue-500 mx-auto mb-4 dark:text-blue-400" />
+                  <Music className="h-16 w-16 text-info mx-auto mb-4 dark:text-info" />
                   <h4 className="text-xl font-semibold mb-2 dark:text-white">No Sheet Music Yet</h4>
                   <p className="text-gray-600 mb-6 dark:text-gray-300">
                     You haven't uploaded any sheet music yet. Get started by uploading your first score.

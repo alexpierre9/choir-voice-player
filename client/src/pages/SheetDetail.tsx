@@ -165,7 +165,7 @@ export default function SheetDetail() {
 
         {/* Processing Status */}
         {sheet.status === "processing" && (
-          <Card className="p-6 bg-blue-50 border-blue-200">
+          <Card className="p-6 bg-blue-50 border-blue-200" aria-live="polite" aria-atomic="true">
             <div className="flex items-center gap-3">
               <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
               <div>
@@ -180,7 +180,7 @@ export default function SheetDetail() {
 
         {/* Error Status */}
         {sheet.status === "error" && (
-          <Card className="p-6 bg-red-50 border-red-200">
+          <Card className="p-6 bg-red-50 border-red-200" aria-live="assertive" aria-atomic="true">
             <div className="space-y-4">
               <div>
                 <p className="font-medium text-red-900">Processing failed</p>

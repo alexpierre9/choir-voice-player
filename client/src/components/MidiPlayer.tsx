@@ -24,7 +24,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const [duration, setDuration] = useState(0);
   const [voiceControls, setVoiceControls] = useState<VoiceControl[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  
+
   const synthsRef = useRef<Map<string, Tone.PolySynth>>(new Map());
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
   const midiDataRef = useRef<Map<string, Midi>>(new Map());
@@ -54,12 +54,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   useEffect(() => {
     const loadMidiFiles = async () => {
       setIsLoading(true);
-      
+
       try {
         // Create synths for each voice
         for (const voice of availableVoices) {
           if (voice === "all") continue; // Skip "all" voice
-          
+
           const synth = new Tone.PolySynth(Tone.Synth, {
             oscillator: { type: "sine" },
             envelope: {
@@ -69,34 +69,34 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
               release: 0.5,
             },
           }).toDestination();
-          
+
           synth.volume.value = -10; // Default volume
           synthsRef.current.set(voice, synth);
         }
-        
+
         // Load MIDI data
         let maxDuration = 0;
-        
+
         for (const voice of availableVoices) {
           if (voice === "all") continue;
-          
+
           const url = midiUrls[voice];
           if (!url) continue;
-          
+
           const response = await fetch(url);
           const arrayBuffer = await response.arrayBuffer();
           const midi = new Midi(arrayBuffer);
-          
+
           midiDataRef.current.set(voice, midi);
-          
+
           // Track max duration
           if (midi.duration > maxDuration) {
             maxDuration = midi.duration;
           }
-          
+
           // Create Tone.Part for this voice
           const notes: any[] = [];
-          
+
           midi.tracks.forEach(track => {
             track.notes.forEach(note => {
               notes.push({
@@ -107,7 +107,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
               });
             });
           });
-          
+
           const part = new Tone.Part((time, note) => {
             const synth = synthsRef.current.get(voice);
             if (synth) {
@@ -119,11 +119,11 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
               );
             }
           }, notes);
-          
+
           part.loop = false;
           partsRef.current.set(voice, part);
         }
-        
+
         setDuration(maxDuration);
         setIsLoading(false);
       } catch (error) {
@@ -131,15 +131,15 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
         setIsLoading(false);
       }
     };
-    
+
     if (Object.keys(midiUrls).length > 0) {
       loadMidiFiles();
     }
-    
+
     // Cleanup
     return () => {
       stopPlayback();
-      
+
       // Dispose of all synths
       synthsRef.current.forEach(synth => {
         try {
@@ -148,7 +148,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           console.warn("Error disposing synth:", e);
         }
       });
-      
+
       // Dispose of all parts
       partsRef.current.forEach(part => {
         try {
@@ -157,12 +157,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           console.warn("Error disposing part:", e);
         }
       });
-      
+
       // Clear all references
       synthsRef.current.clear();
       partsRef.current.clear();
       midiDataRef.current.clear();
-      
+
       // Clear any remaining intervals
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
@@ -173,20 +173,20 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   const startPlayback = async () => {
     await Tone.start();
-    
+
     // Start all parts
     partsRef.current.forEach(part => {
       part.start(0);
     });
-    
+
     Tone.getTransport().start();
     setIsPlaying(true);
-    
+
     // Update progress
     progressIntervalRef.current = setInterval(() => {
       const currentTime = Tone.getTransport().seconds;
       setProgress(currentTime);
-      
+
       if (currentTime >= duration) {
         stopPlayback();
       }
@@ -196,7 +196,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const pausePlayback = () => {
     Tone.getTransport().pause();
     setIsPlaying(false);
-    
+
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
@@ -207,12 +207,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
     Tone.getTransport().stop();
     setIsPlaying(false);
     setProgress(0);
-    
+
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
     }
-    
+
     // Stop all parts
     partsRef.current.forEach(part => {
       part.stop();
@@ -242,7 +242,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
       const newVoiceControls = prev.map(vc =>
         vc.voice === voice ? { ...vc, muted: !vc.muted } : vc
       );
-      
+
       // Update the synth volume immediately after state update
       const synth = synthsRef.current.get(voice);
       if (synth) {
@@ -251,7 +251,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           synth.volume.value = updatedControl.muted ? -Infinity : Tone.gainToDb(updatedControl.volume);
         }
       }
-      
+
       return newVoiceControls;
     });
   };
@@ -263,7 +263,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
       const newVoiceControls = prev.map(vc =>
         vc.voice === voice ? { ...vc, volume: newVolume } : vc
       );
-      
+
       // Update the synth volume immediately after state update
       const synth = synthsRef.current.get(voice);
       if (synth) {
@@ -272,7 +272,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           synth.volume.value = Tone.gainToDb(newVolume);
         }
       }
-      
+
       return newVoiceControls;
     });
   };
@@ -285,8 +285,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   if (isLoading) {
     return (
-      <Card className="p-6">
-        <div className="text-center">Loading MIDI player...</div>
+      <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
+        <div className="text-center" role="status" aria-live="polite">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-blue-500 dark:text-blue-400" />
+          <p className="text-sm text-gray-600 dark:text-gray-300">Loading MIDI player...</p>
+          <span className="sr-only">Loading musical playback controls</span>
+        </div>
       </Card>
     );
   }
@@ -315,9 +319,9 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
             )}
           </Button>
 
-          <Button 
-            onClick={handleStop} 
-            variant="outline" 
+          <Button
+            onClick={handleStop}
+            variant="outline"
             size="lg"
             className="dark:border-gray-600 dark:text-white"
           >
@@ -338,6 +342,8 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
             step={0.1}
             onValueChange={handleProgressChange}
             className="w-full"
+            aria-label="Playback progress"
+            aria-valuetext={`${formatTime(progress)} of ${formatTime(duration)}`}
           />
         </div>
       </div>
@@ -374,6 +380,11 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
                   onValueChange={(value) => handleVolumeChange(control.voice, value)}
                   disabled={control.muted}
                   className="w-full"
+                  aria-label={`${control.label} volume control`}
+                  aria-valuetext={`${Math.round(control.volume * 100)} percent`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(control.volume * 100)}
                 />
               </div>
             </div>

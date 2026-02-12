@@ -37,7 +37,7 @@ export default function Upload() {
         toast.error("File too large. Maximum size is 50MB");
         return;
       }
-      
+
       setSelectedFile(file);
       // Always update title when a new file is selected
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
@@ -98,7 +98,7 @@ export default function Upload() {
         toast.error("File too large. Maximum size is 50MB");
         return;
       }
-      
+
       setSelectedFile(file);
       // Always update title when a new file is selected
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
@@ -134,10 +134,19 @@ export default function Upload() {
 
             {/* File Upload Area */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="Upload sheet music file. Drop file here or press Enter to select from computer. Accepts PDF and MusicXML files up to 50MB."
               className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
               onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
             >
               <input
                 ref={fileInputRef}
