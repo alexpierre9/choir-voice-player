@@ -11,17 +11,20 @@ from pathlib import Path
 import base64
 
 # OMR and Music Processing
-try:
-    import oemer
-    OEMER_AVAILABLE = True
-except ImportError:
-    OEMER_AVAILABLE = False
-    print("Warning: oemer not available. PDF OMR will not work.")
-
+import google.generativeai as genai
 from music21 import converter, stream, note, chord, clef, instrument, midi as m21midi
 from pdf2image import convert_from_path
 from PIL import Image
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# Configure Gemini
+GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GENAI_API_KEY:
+    genai.configure(api_key=GENAI_API_KEY)
+else:
+    print("Warning: GEMINI_API_KEY not found. PDF OMR will not work.")
 
 class VoiceType:
     SOPRANO = "soprano"
@@ -45,13 +48,31 @@ class MusicProcessor:
     def __init__(self):
         self.temp_dir = tempfile.mkdtemp()
     
+    def cleanup(self):
+        """Clean up temporary directory"""
+        import shutil
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+    
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        self.cleanup()
+    
     def process_pdf(self, pdf_path: str) -> str:
         """
-        Convert PDF to MusicXML using OMR
+        Convert PDF to MusicXML using Gemini Vision OMR
         Returns path to generated MusicXML file
         """
-        if not OEMER_AVAILABLE:
-            raise RuntimeError("OMR (oemer) is not available. Please install it.")
+        # Input validation
+        if not os.path.exists(pdf_path):
+            raise ValueError(f"PDF file not found: {pdf_path}")
+        if not os.path.isfile(pdf_path):
+            raise ValueError(f"Path is not a file: {pdf_path}")
+        if not pdf_path.lower().endswith('.pdf'):
+            raise ValueError(f"File must be a PDF: {pdf_path}")
+        
+        if not os.environ.get("GEMINI_API_KEY"):
+            raise RuntimeError("GEMINI_API_KEY is not set")
         
         # Convert first page of PDF to image
         images = convert_from_path(pdf_path, first_page=1, last_page=1, dpi=300)
@@ -60,35 +81,59 @@ class MusicProcessor:
             raise ValueError("Could not extract images from PDF")
         
         # Save image temporarily
-        img_path = os.path.join(self.temp_dir, "sheet_music.png")
-        images[0].save(img_path, "PNG")
+        img = images[0]
         
-        # Run OMR
-        output_dir = self.temp_dir
-        print(f"Running OMR on {img_path}...")
+        print(f"Running Gemini Vision OMR on {pdf_path}...")
         
-        # oemer command line: oemer <image_path> -o <output_path>
-        import subprocess
-        result = subprocess.run(
-            ["oemer", img_path, "-o", output_dir, "--without-deskew"],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minutes timeout
-        )
-        
-        if result.returncode != 0:
-            print(f"OMR stderr: {result.stderr}")
-            raise RuntimeError(f"OMR processing failed: {result.stderr}")
-        
-        # Find generated MusicXML file
-        musicxml_files = list(Path(output_dir).glob("*.musicxml"))
-        if not musicxml_files:
-            musicxml_files = list(Path(output_dir).glob("*.xml"))
-        
-        if not musicxml_files:
-            raise RuntimeError("OMR did not produce a MusicXML file")
-        
-        return str(musicxml_files[0])
+        try:
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
+            model = genai.GenerativeModel(model_name)
+            
+            prompt = """
+            Transcribe this sheet music image into valid MusicXML format.
+            Capture all parts, voices, notes, rhythms, and key signatures accurately.
+            Return ONLY the raw MusicXML code.
+            Do not include any markdown formatting (like ```xml).
+            Start with <?xml and end with </score-partwise>.
+            """
+            
+            response = model.generate_content([prompt, img])
+            content = response.text
+            
+            # Clean up potential markdown formatting
+            if "```xml" in content:
+                content = content.split("```xml")[1].split("```")[0].strip()
+            elif "```" in content:
+                 content = content.split("```")[1].strip()
+            
+            # Validate MusicXML structure
+            if not content.startswith("<?xml") and not content.startswith("<score-partwise"):
+                 start_idx = content.find("<?xml")
+                 if start_idx == -1:
+                     start_idx = content.find("<score-partwise")
+                 
+                 if start_idx != -1:
+                     content = content[start_idx:]
+                 else:
+                     raise ValueError("Gemini did not return valid XML start tag")
+
+            output_path = os.path.join(self.temp_dir, "score.musicxml")
+            with open(output_path, "w") as f:
+                f.write(content)
+            
+            # Validate with music21
+            try:
+                converter.parse(output_path)
+            except Exception as e:
+                # If music21 fails, we might still want to return the file for manual fixing,
+                # but for now let's raise
+                raise RuntimeError(f"Generated MusicXML is invalid: {str(e)}")
+                
+            return output_path
+
+        except Exception as e:
+            print(f"Gemini OMR failed: {e}")
+            raise RuntimeError(f"OMR processing failed: {str(e)}")
     
     def analyze_musicxml(self, musicxml_path: str) -> Dict:
         """
@@ -428,7 +473,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "oemer_available": OEMER_AVAILABLE,
+        "gemini_configured": bool(os.environ.get("GEMINI_API_KEY")),
     }
 
 
