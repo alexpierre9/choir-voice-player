@@ -31,10 +31,10 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  
+
   // Trust proxy (required for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
-  
+
   // General API rate limiter - 100 requests per 15 minutes per IP
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -42,8 +42,12 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many requests, please try again later." },
+    skip: (req) => {
+      // Skip rate limiting in development
+      return process.env.NODE_ENV === "development";
+    },
   });
-  
+
   // Stricter rate limiter for uploads - 10 uploads per 15 minutes per IP
   const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -56,20 +60,20 @@ async function startServer() {
       return process.env.NODE_ENV === "development";
     },
   });
-  
+
   // Apply general rate limiting to all requests
   app.use(generalLimiter);
-  
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  
+
   // Apply stricter rate limiting to upload endpoint
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
-  
+
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
-  
+
   // tRPC API
   app.use(
     "/api/trpc",
