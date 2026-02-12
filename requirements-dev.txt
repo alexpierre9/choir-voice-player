@@ -1,0 +1,9 @@
+oemer
+music21
+pdf2image
+pillow
+fastapi
+uvicorn
+python-multipart
+google-generativeai
+pytest

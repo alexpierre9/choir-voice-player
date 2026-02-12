@@ -139,11 +139,35 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
     // Cleanup
     return () => {
       stopPlayback();
-      synthsRef.current.forEach(synth => synth.dispose());
-      partsRef.current.forEach(part => part.dispose());
+      
+      // Dispose of all synths
+      synthsRef.current.forEach(synth => {
+        try {
+          synth.dispose();
+        } catch (e) {
+          console.warn("Error disposing synth:", e);
+        }
+      });
+      
+      // Dispose of all parts
+      partsRef.current.forEach(part => {
+        try {
+          part.dispose();
+        } catch (e) {
+          console.warn("Error disposing part:", e);
+        }
+      });
+      
+      // Clear all references
       synthsRef.current.clear();
       partsRef.current.clear();
       midiDataRef.current.clear();
+      
+      // Clear any remaining intervals
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
     };
   }, [midiUrls, availableVoices]);
 
@@ -214,37 +238,43 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   };
 
   const toggleMute = (voice: string) => {
-    setVoiceControls(prev =>
-      prev.map(vc =>
+    setVoiceControls(prev => {
+      const newVoiceControls = prev.map(vc =>
         vc.voice === voice ? { ...vc, muted: !vc.muted } : vc
-      )
-    );
-    
-    const synth = synthsRef.current.get(voice);
-    if (synth) {
-      const control = voiceControls.find(vc => vc.voice === voice);
-      if (control) {
-        synth.volume.value = control.muted ? 0 : Tone.gainToDb(control.volume);
+      );
+      
+      // Update the synth volume immediately after state update
+      const synth = synthsRef.current.get(voice);
+      if (synth) {
+        const updatedControl = newVoiceControls.find(vc => vc.voice === voice);
+        if (updatedControl) {
+          synth.volume.value = updatedControl.muted ? -Infinity : Tone.gainToDb(updatedControl.volume);
+        }
       }
-    }
+      
+      return newVoiceControls;
+    });
   };
 
   const handleVolumeChange = (voice: string, value: number[]) => {
     const newVolume = value[0];
-    
-    setVoiceControls(prev =>
-      prev.map(vc =>
+
+    setVoiceControls(prev => {
+      const newVoiceControls = prev.map(vc =>
         vc.voice === voice ? { ...vc, volume: newVolume } : vc
-      )
-    );
-    
-    const synth = synthsRef.current.get(voice);
-    if (synth) {
-      const control = voiceControls.find(vc => vc.voice === voice);
-      if (control && !control.muted) {
-        synth.volume.value = Tone.gainToDb(newVolume);
+      );
+      
+      // Update the synth volume immediately after state update
+      const synth = synthsRef.current.get(voice);
+      if (synth) {
+        const updatedControl = newVoiceControls.find(vc => vc.voice === voice);
+        if (updatedControl && !updatedControl.muted) {
+          synth.volume.value = Tone.gainToDb(newVolume);
+        }
       }
-    }
+      
+      return newVoiceControls;
+    });
   };
 
   const formatTime = (seconds: number) => {
@@ -262,7 +292,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   }
 
   return (
-    <Card className="p-6 space-y-6">
+    <Card className="p-6 space-y-6 dark:bg-gray-800 dark:border-gray-700">
       {/* Playback Controls */}
       <div className="space-y-4">
         <div className="flex items-center gap-4">
@@ -270,7 +300,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
             onClick={handlePlayPause}
             variant="default"
             size="lg"
-            className="w-24"
+            className="w-24 dark:bg-blue-600 dark:hover:bg-blue-700"
           >
             {isPlaying ? (
               <>
@@ -284,17 +314,22 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
               </>
             )}
           </Button>
-          
-          <Button onClick={handleStop} variant="outline" size="lg">
+
+          <Button 
+            onClick={handleStop} 
+            variant="outline" 
+            size="lg"
+            className="dark:border-gray-600 dark:text-white"
+          >
             <Square className="mr-2 h-4 w-4" />
             Stop
           </Button>
-          
-          <div className="flex-1 text-sm text-muted-foreground">
+
+          <div className="flex-1 text-sm text-muted-foreground dark:text-gray-300">
             {formatTime(progress)} / {formatTime(duration)}
           </div>
         </div>
-        
+
         {/* Progress Bar */}
         <div className="space-y-2">
           <Slider
@@ -309,18 +344,19 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
       {/* Voice Controls */}
       <div className="space-y-4">
-        <h3 className="font-semibold">Voice Controls</h3>
-        
+        <h3 className="font-semibold dark:text-white">Voice Controls</h3>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {voiceControls.map(control => (
             <div
               key={control.voice}
-              className="flex items-center gap-3 p-3 border rounded-lg"
+              className="flex items-center gap-3 p-3 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
             >
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => toggleMute(control.voice)}
+                className="dark:text-white"
               >
                 {control.muted ? (
                   <VolumeX className="h-4 w-4" />
@@ -328,9 +364,9 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
                   <Volume2 className="h-4 w-4" />
                 )}
               </Button>
-              
+
               <div className="flex-1 space-y-2">
-                <div className="text-sm font-medium">{control.label}</div>
+                <div className="text-sm font-medium dark:text-gray-200">{control.label}</div>
                 <Slider
                   value={[control.volume]}
                   max={1}

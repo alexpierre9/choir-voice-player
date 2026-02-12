@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import Header from "@/components/Header";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload as UploadIcon, FileMusic, Loader2 } from "lucide-react";
@@ -31,10 +32,15 @@ export default function Upload() {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setSelectedFile(file);
-      if (!title) {
-        setTitle(file.name.replace(/\.[^/.]+$/, ""));
+      // Validate file size (50MB limit to match backend)
+      if (file.size > 50 * 1024 * 1024) {
+        toast.error("File too large. Maximum size is 50MB");
+        return;
       }
+      
+      setSelectedFile(file);
+      // Always update title when a new file is selected
+      setTitle(file.name.replace(/\.[^/.]+$/, ""));
     }
   };
 
@@ -87,10 +93,15 @@ export default function Upload() {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file) {
-      setSelectedFile(file);
-      if (!title) {
-        setTitle(file.name.replace(/\.[^/.]+$/, ""));
+      // Validate file size (50MB limit to match backend)
+      if (file.size > 50 * 1024 * 1024) {
+        toast.error("File too large. Maximum size is 50MB");
+        return;
       }
+      
+      setSelectedFile(file);
+      // Always update title when a new file is selected
+      setTitle(file.name.replace(/\.[^/.]+$/, ""));
     }
   };
 
@@ -99,13 +110,14 @@ export default function Upload() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-6">
+      <Header />
       <div className="container max-w-4xl mx-auto">
         <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            Choir Voice Player
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+            Upload Sheet Music
           </h1>
-          <p className="text-lg text-gray-600">
+          <p className="text-lg text-gray-600 dark:text-gray-300">
             Upload sheet music and play individual SATB voices
           </p>
         </div>

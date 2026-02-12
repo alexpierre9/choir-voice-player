@@ -44,14 +44,20 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const userId = ctx.user.id;
         const sheetId = nanoid();
-        
+
         // Decode file data
         const fileBuffer = Buffer.from(input.fileData, 'base64');
-        
+
+        // Validate file size (max 50MB)
+        const maxSize = 50 * 1024 * 1024; // 50MB in bytes
+        if (fileBuffer.length > maxSize) {
+          throw new Error(`File size exceeds maximum allowed size of ${maxSize / (1024 * 1024)}MB`);
+        }
+
         // Upload original file to S3
         const fileExtension = input.fileType === "pdf" ? "pdf" : "musicxml";
         const originalFileKey = `sheet-music/${userId}/${sheetId}/original.${fileExtension}`;
-        
+
         const { key: uploadedKey } = await storagePut(
           originalFileKey,
           fileBuffer,
@@ -72,12 +78,16 @@ export const appRouter = router({
         });
         
         // Process file asynchronously
-        processSheetMusicAsync(sheetId, fileBuffer, input.fileType).catch(err => {
+        processSheetMusicAsync(sheetId, fileBuffer, input.fileType).catch(async err => {
           console.error(`Failed to process sheet music ${sheetId}:`, err);
-          updateSheetMusic(sheetId, {
-            status: "error",
-            errorMessage: err.message,
-          });
+          try {
+            await updateSheetMusic(sheetId, {
+              status: "error",
+              errorMessage: err.message,
+            });
+          } catch (updateErr) {
+            console.error(`Failed to update error status for sheet music ${sheetId}:`, updateErr);
+          }
         });
         
         return {
@@ -311,52 +321,74 @@ async function regenerateMidiAsync(
   voiceAssignments: Record<string, string>
 ) {
   try {
-    
+    // Get the current sheet to check if voice assignments are still current
+    const currentSheet = await getSheetMusic(sheetId);
+    if (!currentSheet) {
+      throw new Error("Sheet not found");
+    }
+
+    // Check if the voice assignments are still the same as when this regeneration was triggered
+    if (JSON.stringify(currentSheet.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
+      console.log(`MIDI regeneration for ${sheetId} cancelled - voice assignments have changed`);
+      return; // Cancel this regeneration since newer assignments exist
+    }
+
     // Get MusicXML content from S3
     const { url: musicxmlUrl } = await storageGet(musicxmlKey, 300);
     const musicxmlResponse = await fetch(musicxmlUrl);
     const musicxmlContent = await musicxmlResponse.text();
-    
+
     // Call Python service to generate MIDI
     const formData = new FormData();
     formData.append('musicxml', musicxmlContent);
     formData.append('voice_assignments', JSON.stringify(voiceAssignments));
-    
+
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`MIDI generation error: ${errorText}`);
     }
-    
+
     const result = await response.json() as {
       success: boolean;
       midi_files: Record<string, string>; // base64 encoded MIDI files
     };
-    
+
     if (!result.success) {
       throw new Error("MIDI generation failed");
     }
-    
+
+    // Double-check that voice assignments are still current after processing
+    const sheetAfterProcessing = await getSheetMusic(sheetId);
+    if (!sheetAfterProcessing) {
+      throw new Error("Sheet not found after processing");
+    }
+
+    if (JSON.stringify(sheetAfterProcessing.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
+      console.log(`MIDI regeneration for ${sheetId} cancelled after processing - voice assignments have changed`);
+      return; // Cancel this update since newer assignments exist
+    }
+
     // Upload MIDI files to S3
     const midiFileKeys: Record<string, string> = {};
-    
+
     for (const [voiceType, base64Data] of Object.entries(result.midi_files)) {
       const midiBuffer = Buffer.from(base64Data, 'base64');
       const midiKey = `sheet-music/${userId}/${sheetId}/midi/${voiceType}.mid`;
-      
+
       const { key } = await storagePut(midiKey, midiBuffer, "audio/midi");
       midiFileKeys[voiceType] = key;
     }
-    
+
     // Update database with MIDI file keys
     await updateSheetMusic(sheetId, {
       midiFileKeys,
     });
-    
+
   } catch (error) {
     console.error("MIDI generation error:", error);
     throw error;

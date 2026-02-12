@@ -93,10 +93,12 @@ export async function createSheetMusic(data: InsertSheetMusic): Promise<SheetMus
     throw new Error("Database not available");
   }
 
-  await db.insert(sheetMusic).values(data);
-  
-  const result = await db.select().from(sheetMusic).where(eq(sheetMusic.id, data.id!)).limit(1);
-  return result[0];
+  return await db.transaction(async (tx) => {
+    await tx.insert(sheetMusic).values(data);
+
+    const result = await tx.select().from(sheetMusic).where(eq(sheetMusic.id, data.id!)).limit(1);
+    return result[0];
+  });
 }
 
 export async function updateSheetMusic(id: string, data: Partial<InsertSheetMusic>): Promise<void> {
@@ -105,7 +107,9 @@ export async function updateSheetMusic(id: string, data: Partial<InsertSheetMusi
     throw new Error("Database not available");
   }
 
-  await db.update(sheetMusic).set(data).where(eq(sheetMusic.id, id));
+  await db.transaction(async (tx) => {
+    await tx.update(sheetMusic).set(data).where(eq(sheetMusic.id, id));
+  });
 }
 
 export async function getSheetMusic(id: string): Promise<SheetMusic | undefined> {
@@ -133,6 +137,8 @@ export async function deleteSheetMusic(id: string): Promise<void> {
     throw new Error("Database not available");
   }
 
-  await db.delete(sheetMusic).where(eq(sheetMusic.id, id));
+  await db.transaction(async (tx) => {
+    await tx.delete(sheetMusic).where(eq(sheetMusic.id, id));
+  });
 }
 

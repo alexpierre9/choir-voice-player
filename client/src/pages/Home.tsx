@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import Header from "@/components/Header";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
 import { Music, Upload, Users, Volume2 } from "lucide-react";
 import { useLocation } from "wouter";
@@ -15,40 +16,13 @@ export default function Home() {
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Header */}
-      <header className="border-b bg-white/80 backdrop-blur-sm">
-        <div className="container mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Music className="h-8 w-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">
-              {APP_TITLE || "Choir Voice Player"}
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {isAuthenticated ? (
-              <>
-                <span className="text-sm text-gray-600">
-                  {user?.name || user?.email}
-                </span>
-                <Button variant="outline" onClick={() => logout()}>
-                  Log Out
-                </Button>
-              </>
-            ) : (
-              <Button onClick={() => window.location.href = getLoginUrl()}>
-                Log In
-              </Button>
-            )}
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+      <Header />
 
       {/* Hero Section */}
       <div className="container mx-auto px-6 py-16">
         <div className="text-center mb-12">
-          <h2 className="text-5xl font-bold text-gray-900 mb-4">
+          <h2 className="text-4xl font-bold text-gray-900 mb-4">
             Play Every Voice in Your Choir
           </h2>
           <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
@@ -103,53 +77,74 @@ export default function Home() {
         </div>
 
         {/* Recent Uploads */}
-        {isAuthenticated && userSheets && userSheets.length > 0 && (
+        {isAuthenticated && (
           <div>
-            <h3 className="text-2xl font-bold text-gray-900 mb-4">
+            <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
               Your Recent Uploads
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {userSheets.slice(0, 6).map((sheet) => (
-                <Card
-                  key={sheet.id}
-                  className="p-4 hover:shadow-lg transition-shadow cursor-pointer"
-                  onClick={() => setLocation(`/sheet/${sheet.id}`)}
-                >
-                  <div className="flex items-start gap-3">
-                    <Music className="h-6 w-6 text-blue-500 flex-shrink-0 mt-1" />
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-semibold truncate">{sheet.title}</h4>
-                      <p className="text-sm text-gray-500 truncate">
-                        {sheet.originalFilename}
-                      </p>
-                      <div className="mt-2">
-                        {sheet.status === "ready" && (
-                          <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-                            Ready
-                          </span>
-                        )}
-                        {sheet.status === "processing" && (
-                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                            Processing...
-                          </span>
-                        )}
-                        {sheet.status === "error" && (
-                          <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">
-                            Error
-                          </span>
-                        )}
+            
+            {userSheets && userSheets.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {userSheets.slice(0, 6).map((sheet) => (
+                  <Card
+                    key={sheet.id}
+                    className="p-4 hover:shadow-lg transition-shadow cursor-pointer dark:bg-gray-800 dark:border-gray-700"
+                    onClick={() => setLocation(`/sheet/${sheet.id}`)}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Music className="h-6 w-6 text-blue-500 flex-shrink-0 mt-1 dark:text-blue-400" />
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold truncate dark:text-white">{sheet.title}</h4>
+                        <p className="text-sm text-gray-500 truncate dark:text-gray-400">
+                          {sheet.originalFilename}
+                        </p>
+                        <div className="mt-2">
+                          {sheet.status === "ready" && (
+                            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded dark:bg-green-900/30 dark:text-green-400">
+                              Ready
+                            </span>
+                          )}
+                          {sheet.status === "processing" && (
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded dark:bg-blue-900/30 dark:text-blue-400">
+                              Processing...
+                            </span>
+                          )}
+                          {sheet.status === "error" && (
+                            <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded dark:bg-red-900/30 dark:text-red-400">
+                              Error
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </Card>
-              ))}
-            </div>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Card className="p-12 text-center dark:bg-gray-800 dark:border-gray-700">
+                <div className="mx-auto max-w-md">
+                  <Music className="h-16 w-16 text-blue-500 mx-auto mb-4 dark:text-blue-400" />
+                  <h4 className="text-xl font-semibold mb-2 dark:text-white">No Sheet Music Yet</h4>
+                  <p className="text-gray-600 mb-6 dark:text-gray-300">
+                    You haven't uploaded any sheet music yet. Get started by uploading your first score.
+                  </p>
+                  <Button
+                    size="lg"
+                    onClick={() => setLocation("/upload")}
+                    className="dark:bg-blue-600 dark:hover:bg-blue-700"
+                  >
+                    <Upload className="mr-2 h-5 w-5" />
+                    Upload Sheet Music
+                  </Button>
+                </div>
+              </Card>
+            )}
           </div>
         )}
 
         {/* How It Works */}
         <div className="mt-16">
-          <h3 className="text-3xl font-bold text-center text-gray-900 mb-8">
+          <h3 className="text-2xl font-bold text-center text-gray-900 mb-8">
             How It Works
           </h3>
           <div className="max-w-3xl mx-auto space-y-6">

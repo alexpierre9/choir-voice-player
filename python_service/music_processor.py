@@ -36,17 +36,29 @@ class VoiceType:
 
 class MusicProcessor:
     """Main processor for sheet music analysis and MIDI generation"""
-    
-    # Pitch ranges for SATB voices (MIDI note numbers)
-    VOICE_RANGES = {
-        VoiceType.SOPRANO: (60, 81),  # C4 to A5
-        VoiceType.ALTO: (55, 76),     # G3 to E5
-        VoiceType.TENOR: (48, 69),    # C3 to A4
-        VoiceType.BASS: (40, 64),     # E2 to E4
-    }
-    
+
     def __init__(self):
+        # Pitch ranges for SATB voices (MIDI note numbers) - configurable via environment
+        self.VOICE_RANGES = {
+            VoiceType.SOPRANO: self._parse_range(os.environ.get("SOPRANO_RANGE", "60,81")),  # C4 to A5
+            VoiceType.ALTO: self._parse_range(os.environ.get("ALTO_RANGE", "55,76")),       # G3 to E5
+            VoiceType.TENOR: self._parse_range(os.environ.get("TENOR_RANGE", "48,69")),     # C3 to A4
+            VoiceType.BASS: self._parse_range(os.environ.get("BASS_RANGE", "40,64")),       # E2 to E4
+        }
+        
+        # Overlap threshold for voice detection (default 30%)
+        self.OVERLAP_THRESHOLD = float(os.environ.get("VOICE_OVERLAP_THRESHOLD", "0.3"))
+        
         self.temp_dir = tempfile.mkdtemp()
+
+    def _parse_range(self, range_str):
+        """Parse a range string like '60,81' into a tuple (60, 81)"""
+        try:
+            parts = range_str.split(',')
+            return (int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            print(f"Warning: Invalid range format '{range_str}', using default (0, 127)")
+            return (0, 127)
     
     def cleanup(self):
         """Clean up temporary directory"""
@@ -204,57 +216,75 @@ class MusicProcessor:
         return (min(pitches), max(pitches))
     
     def _detect_voice_type(
-        self, 
-        part_name: str, 
-        clef_type: str, 
+        self,
+        part_name: str,
+        clef_type: str,
         pitch_range: Optional[Tuple[int, int]]
     ) -> str:
         """
         Automatically detect voice type based on part name, clef, and pitch range
         """
-        part_name_lower = part_name.lower()
-        
-        # Check part name for keywords
-        if any(keyword in part_name_lower for keyword in ["soprano", "sop", "s "]):
+        part_name_lower = part_name.lower().strip()
+
+        # Check part name for keywords (with more comprehensive matching)
+        soprano_keywords = ["soprano", "sop", "s ", "s.", "sopr"]
+        alto_keywords = ["alto", "alt", "a ", "a.", "contr", "counter"]
+        tenor_keywords = ["tenor", "ten", "t ", "t.", "ten."]
+        bass_keywords = ["bass", "bas", "b ", "b.", "bass.", "bari", "baritone", "bar"]
+
+        if any(keyword in part_name_lower for keyword in soprano_keywords):
             return VoiceType.SOPRANO
-        if any(keyword in part_name_lower for keyword in ["alto", "alt", "a "]):
+        if any(keyword in part_name_lower for keyword in alto_keywords):
             return VoiceType.ALTO
-        if any(keyword in part_name_lower for keyword in ["tenor", "ten", "t "]):
+        if any(keyword in part_name_lower for keyword in tenor_keywords):
             return VoiceType.TENOR
-        if any(keyword in part_name_lower for keyword in ["bass", "bas", "b "]):
+        if any(keyword in part_name_lower for keyword in bass_keywords):
             return VoiceType.BASS
-        
-        # If no keyword match, use clef and pitch range
+
+        # If no keyword match, use pitch range primarily
         if pitch_range:
             min_pitch, max_pitch = pitch_range
             avg_pitch = (min_pitch + max_pitch) / 2
-            
+
             # Calculate overlap with each voice range
             best_match = VoiceType.OTHER
             best_score = 0
-            
+
             for voice_type, (voice_min, voice_max) in self.VOICE_RANGES.items():
                 # Calculate overlap
                 overlap_min = max(min_pitch, voice_min)
                 overlap_max = min(max_pitch, voice_max)
-                
+
                 if overlap_max >= overlap_min:
-                    overlap = overlap_max - overlap_min
-                    score = overlap / (max_pitch - min_pitch + 1)
-                    
+                    overlap_range = overlap_max - overlap_min
+                    score = overlap_range / (max_pitch - min_pitch + 1)
+
                     if score > best_score:
                         best_score = score
                         best_match = voice_type
-            
-            if best_score > 0.3:  # At least 30% overlap
+
+            # If we have a strong match based on pitch range, return it
+            if best_score > self.OVERLAP_THRESHOLD:
                 return best_match
-        
-        # Fallback to clef-based detection
+
+            # If we have a moderate match, consider it but factor in clef
+            if best_score > self.OVERLAP_THRESHOLD / 2:
+                # If clef agrees with pitch range prediction, return it
+                if ((best_match == VoiceType.SOPRANO or best_match == VoiceType.ALTO) and clef_type in ["treble", "alto"]) or \
+                   ((best_match == VoiceType.TENOR or best_match == VoiceType.BASS) and clef_type in ["bass", "tenor"]):
+                    return best_match
+
+        # Fallback to clef-based detection if no strong pitch range match
         if clef_type == "treble":
-            return VoiceType.SOPRANO
+            return VoiceType.SOPRANO  # Default to soprano for treble clef
         elif clef_type == "bass":
-            return VoiceType.BASS
-        
+            return VoiceType.BASS  # Default to bass for bass clef
+        elif clef_type == "alto":
+            return VoiceType.ALTO  # Match clef to voice
+        elif clef_type == "tenor":
+            return VoiceType.TENOR  # Match clef to voice
+
+        # If no other criteria match, return OTHER
         return VoiceType.OTHER
     
     def generate_midi_files(
@@ -331,13 +361,6 @@ class MusicProcessor:
         else:
             return instrument.Vocalist()
     
-    def cleanup(self):
-        """Clean up temporary files"""
-        import shutil
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
-
-
 # FastAPI endpoints
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, FileResponse
@@ -346,80 +369,113 @@ import uvicorn
 
 app = FastAPI(title="Choir Voice Player - Music Processing Service")
 
-# Enable CORS
+# Enable CORS - configurable origins
+ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")] if ALLOWED_ORIGINS_STR != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global processor instance
-processor = MusicProcessor()
+
+def create_temp_processor():
+    """Create a temporary processor instance for a single request"""
+    return MusicProcessor()
 
 
 @app.post("/api/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
     """Process PDF sheet music using OMR"""
-    if not file.filename.endswith('.pdf'):
+    # Validate file type
+    if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(400, "File must be a PDF")
-    
-    # Save uploaded file
-    pdf_path = os.path.join(processor.temp_dir, file.filename)
-    with open(pdf_path, 'wb') as f:
-        content = await file.read()
-        f.write(content)
-    
+
+    # Validate file size (50MB limit)
+    file_content = await file.read()
+    if len(file_content) > 50 * 1024 * 1024:  # 50MB
+        raise HTTPException(413, "File too large. Maximum size is 50MB")
+
+    processor = create_temp_processor()
     try:
+        # Save uploaded file
+        pdf_path = os.path.join(processor.temp_dir, file.filename)
+        with open(pdf_path, 'wb') as f:
+            f.write(file_content)
+
         # Convert PDF to MusicXML
         musicxml_path = processor.process_pdf(pdf_path)
-        
+
         # Analyze the MusicXML
         analysis = processor.analyze_musicxml(musicxml_path)
-        
+
         # Read MusicXML content
         with open(musicxml_path, 'r') as f:
             musicxml_content = f.read()
-        
+
         return JSONResponse({
             "success": True,
             "musicxml": musicxml_content,
             "analysis": analysis,
         })
-    
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Processing failed: {str(e)}")
+        # Log the full error for debugging but return a sanitized message to the client
+        print(f"Error processing PDF: {str(e)}")
+        raise HTTPException(500, "Processing failed. Please try again later.")
+    finally:
+        # Clean up the temporary processor
+        processor.cleanup()
 
 
 @app.post("/api/process-musicxml")
 async def process_musicxml(file: UploadFile = File(...)):
     """Process uploaded MusicXML file"""
-    if not (file.filename.endswith('.xml') or file.filename.endswith('.musicxml') or file.filename.endswith('.mxl')):
+    # Validate file type
+    if not (file.filename.lower().endswith('.xml') or file.filename.lower().endswith('.musicxml') or file.filename.lower().endswith('.mxl')):
         raise HTTPException(400, "File must be MusicXML (.xml, .musicxml, or .mxl)")
-    
-    # Save uploaded file
-    musicxml_path = os.path.join(processor.temp_dir, file.filename)
-    with open(musicxml_path, 'wb') as f:
-        content = await file.read()
-        f.write(content)
-    
+
+    # Validate file size (50MB limit)
+    file_content = await file.read()
+    if len(file_content) > 50 * 1024 * 1024:  # 50MB
+        raise HTTPException(413, "File too large. Maximum size is 50MB")
+
+    processor = create_temp_processor()
     try:
+        # Save uploaded file
+        musicxml_path = os.path.join(processor.temp_dir, file.filename)
+        with open(musicxml_path, 'wb') as f:
+            f.write(file_content)
+
         # Analyze the MusicXML
         analysis = processor.analyze_musicxml(musicxml_path)
-        
+
         # Read MusicXML content
         with open(musicxml_path, 'r') as f:
             musicxml_content = f.read()
-        
+
         return JSONResponse({
             "success": True,
             "musicxml": musicxml_content,
             "analysis": analysis,
         })
-    
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Analysis failed: {str(e)}")
+        # Log the full error for debugging but return a sanitized message to the client
+        print(f"Error processing MusicXML: {str(e)}")
+        raise HTTPException(500, "Analysis failed. Please try again later.")
+    finally:
+        # Clean up the temporary processor
+        processor.cleanup()
 
 
 @app.post("/api/generate-midi")
@@ -428,52 +484,80 @@ async def generate_midi(
     voice_assignments: str = Form(...)
 ):
     """Generate MIDI files for each voice"""
-    
+
+    # Validate MusicXML content length
+    if len(musicxml) > 50 * 1024 * 1024:  # 50MB
+        raise HTTPException(413, "MusicXML content too large. Maximum size is 50MB")
+
     # Parse voice assignments
     try:
         assignments = json.loads(voice_assignments)
     except json.JSONDecodeError:
         raise HTTPException(400, "Invalid voice_assignments JSON")
-    
-    # Save MusicXML to temp file
-    musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
-    with open(musicxml_path, 'w') as f:
-        f.write(musicxml)
-    
-    # Create output directory
-    output_dir = os.path.join(processor.temp_dir, "midi_output")
-    os.makedirs(output_dir, exist_ok=True)
-    
+
+    processor = create_temp_processor()
     try:
+        # Save MusicXML to temp file
+        musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
+        with open(musicxml_path, 'w') as f:
+            f.write(musicxml)
+
+        # Create output directory
+        output_dir = os.path.join(processor.temp_dir, "midi_output")
+        os.makedirs(output_dir, exist_ok=True)
+
         # Generate MIDI files
         midi_files = processor.generate_midi_files(
             musicxml_path,
             assignments,
             output_dir
         )
-        
+
         # Read MIDI files and encode as base64
         midi_data = {}
         for voice_type, midi_path in midi_files.items():
             with open(midi_path, 'rb') as f:
                 midi_content = f.read()
                 midi_data[voice_type] = base64.b64encode(midi_content).decode('utf-8')
-        
+
         return JSONResponse({
             "success": True,
             "midi_files": midi_data,
         })
-    
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        raise HTTPException(500, f"MIDI generation failed: {str(e)}")
+        # Log the full error for debugging but return a sanitized message to the client
+        print(f"Error generating MIDI: {str(e)}")
+        raise HTTPException(500, "MIDI generation failed. Please try again later.")
+    finally:
+        # Clean up the temporary processor
+        processor.cleanup()
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
+    
+    # Test Gemini API if configured
+    gemini_working = False
+    if gemini_configured:
+        try:
+            import google.generativeai as genai
+            model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro"))
+            # Simple test to check if API is accessible
+            response = model.generate_content("Say 'health check' in one word")
+            gemini_working = bool(response.text and "health" in response.text.lower())
+        except Exception:
+            gemini_working = False
+    
     return {
         "status": "healthy",
-        "gemini_configured": bool(os.environ.get("GEMINI_API_KEY")),
+        "gemini_configured": gemini_configured,
+        "gemini_working": gemini_working,
     }
 
 

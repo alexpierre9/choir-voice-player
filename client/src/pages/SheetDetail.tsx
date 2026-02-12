@@ -3,6 +3,7 @@ import { useRoute, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import Header from "@/components/Header";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -34,10 +35,17 @@ export default function SheetDetail() {
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
     { id: sheetId },
-    { enabled: !!sheetId, refetchInterval: (query) => {
-      // Poll every 2 seconds if still processing
-      return query.state.data?.status === "processing" ? 2000 : false;
-    }}
+    { 
+      enabled: !!sheetId, 
+      refetchInterval: (query) => {
+        // Poll every 3 seconds if still processing to reduce backend load
+        return query.state.data?.status === "processing" ? 3000 : false;
+      },
+      retry: 2, // Reduce retries to reduce backend load
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000), // Faster max delay
+      staleTime: 1000, // Cache data for 1 second to reduce requests
+      gcTime: 300000, // Keep unused data for 5 minutes
+    }
   );
 
   const updateVoicesMutation = trpc.sheetMusic.updateVoiceAssignments.useMutation({
@@ -60,29 +68,47 @@ export default function SheetDetail() {
 
   // Load MIDI URLs when sheet is ready
   useEffect(() => {
+    // Use a ref to track if a load operation is in progress to prevent race conditions
+    let isCancelled = false;
+    
     const loadMidiUrls = async () => {
-      if (sheet?.status === "ready" && sheet.midiFileKeys) {
+      if (sheet?.status === "ready" && sheet.midiFileKeys && !isCancelled) {
         const keys = sheet.midiFileKeys as Record<string, string>;
         const urls: Record<string, string> = {};
 
         for (const [voice, _] of Object.entries(keys)) {
+          if (isCancelled) break; // Check if component unmounted
+          
           try {
-            const result = await (trpc.sheetMusic.getMidiUrl as any).fetch({
+            const result = await trpc.sheetMusic.getMidiUrl.query({
               id: sheetId,
               voice,
             });
-            urls[voice] = result.url;
+            if (!isCancelled) {
+              urls[voice] = result.url;
+            }
           } catch (error) {
-            console.error(`Failed to load MIDI URL for ${voice}:`, error);
+            if (!isCancelled) {
+              console.error(`Failed to load MIDI URL for ${voice}:`, error);
+            }
           }
         }
 
-        setMidiUrls(urls);
+        if (!isCancelled) {
+          setMidiUrls(urls);
+        }
       }
     };
 
-    loadMidiUrls();
-  }, [sheet, sheetId]);
+    if (sheet?.status === "ready" && sheet.midiFileKeys) {
+      loadMidiUrls();
+    }
+    
+    // Cleanup function to prevent state updates on unmounted components
+    return () => {
+      isCancelled = true;
+    };
+  }, [sheet?.status, sheet?.midiFileKeys, sheetId]); // Only re-run when status or midiFileKeys change
 
   const handleVoiceChange = (partIndex: string, newVoice: string) => {
     setVoiceAssignments((prev) => ({
@@ -122,7 +148,8 @@ export default function SheetDetail() {
   const availableVoices = Object.keys(midiUrls).filter(v => v !== "all");
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-6">
+      <Header />
       <div className="container max-w-6xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center gap-4">
@@ -131,8 +158,8 @@ export default function SheetDetail() {
             Back
           </Button>
           <div className="flex-1">
-            <h1 className="text-3xl font-bold text-gray-900">{sheet.title}</h1>
-            <p className="text-gray-600">{sheet.originalFilename}</p>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">{sheet.title}</h1>
+            <p className="text-gray-600 dark:text-gray-300">{sheet.originalFilename}</p>
           </div>
         </div>
 
@@ -154,8 +181,20 @@ export default function SheetDetail() {
         {/* Error Status */}
         {sheet.status === "error" && (
           <Card className="p-6 bg-red-50 border-red-200">
-            <p className="font-medium text-red-900">Processing failed</p>
-            <p className="text-sm text-red-700">{sheet.errorMessage}</p>
+            <div className="space-y-4">
+              <div>
+                <p className="font-medium text-red-900">Processing failed</p>
+                <p className="text-sm text-red-700">{sheet.errorMessage || "An unknown error occurred during processing."}</p>
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={() => setLocation("/")}>
+                  Go Back
+                </Button>
+                <Button variant="outline" onClick={() => window.location.reload()}>
+                  Refresh Page
+                </Button>
+              </div>
+            </div>
           </Card>
         )}
 
