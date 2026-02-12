@@ -8,6 +8,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { createFileServerHandler } from "../storage-local";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -73,7 +74,10 @@ async function startServer() {
 
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
-
+  
+  // Static file serving for uploaded files (MIDI, PDFs, etc.)
+  app.use("/files", createFileServerHandler());
+  
   // tRPC API
   app.use(
     "/api/trpc",

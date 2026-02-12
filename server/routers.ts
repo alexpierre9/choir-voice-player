@@ -11,7 +11,7 @@ import {
   getUserSheetMusic,
   deleteSheetMusic 
 } from "./db";
-import { storagePut, storageGet, storageDelete } from "./storage";
+import { storagePut, storageGet, storageDelete } from "./storage-local";
 import FormData from "form-data";
 import fetch from "node-fetch";
 
