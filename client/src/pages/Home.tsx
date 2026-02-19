@@ -2,13 +2,13 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import Header from "@/components/Header";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 import { Music, Upload, Users, Volume2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 
 export default function Home() {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user } = useAuth();
   const [, setLocation] = useLocation();
 
   const { data: userSheets } = trpc.sheetMusic.list.useQuery(undefined, {

@@ -1,11 +1,10 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Moon, Sun, Music } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 
 export default function Header() {
-  const { user, isAuthenticated, logout } = useAuth();
+  
   const { theme, toggleTheme } = useTheme();
 
   return (
