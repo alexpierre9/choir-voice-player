@@ -541,23 +541,10 @@ async def generate_midi(
 async def health_check():
     """Health check endpoint"""
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
-    
-    # Test Gemini API if configured
-    gemini_working = False
-    if gemini_configured:
-        try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro"))
-            # Simple test to check if API is accessible
-            response = model.generate_content("Say 'health check' in one word")
-            gemini_working = bool(response.text and "health" in response.text.lower())
-        except Exception:
-            gemini_working = False
-    
+
     return {
         "status": "healthy",
         "gemini_configured": gemini_configured,
-        "gemini_working": gemini_working,
     }
 
 

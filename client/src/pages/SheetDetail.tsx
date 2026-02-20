@@ -133,7 +133,7 @@ export default function SheetDetail() {
   const handleSaveChanges = () => {
     updateVoicesMutation.mutate({
       id: sheetId,
-      voiceAssignments,
+      voiceAssignments: voiceAssignments as Record<string, "soprano" | "alto" | "tenor" | "bass" | "other">,
     });
   };
 

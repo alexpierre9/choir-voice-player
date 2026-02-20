@@ -14,6 +14,7 @@ import {
 import { storagePut, storageGet, storageDelete } from "./storage-local";
 import FormData from "form-data";
 import fetch from "node-fetch";
+import fs from "fs/promises";
 
 // Python service URL
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
@@ -39,7 +40,7 @@ export const appRouter = router({
         filename: z.string(),
         fileType: z.enum(["pdf", "musicxml"]),
         fileData: z.string(), // base64 encoded
-        title: z.string().optional(),
+        title: z.string().max(255).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const userId = ctx.user.id;
@@ -124,7 +125,7 @@ export const appRouter = router({
     updateVoiceAssignments: protectedProcedure
       .input(z.object({
         id: z.string(),
-        voiceAssignments: z.record(z.string(), z.string()), // { "0": "soprano", "1": "alto", ... }
+        voiceAssignments: z.record(z.string(), z.enum(["soprano", "alto", "tenor", "bass", "other"])),
       }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
@@ -260,10 +261,14 @@ async function processSheetMusicAsync(
     });
     
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
+      signal: controller.signal as any,
     });
+    clearTimeout(timeoutId);
     
     if (!response.ok) {
       const errorText = await response.text();
@@ -333,20 +338,23 @@ async function regenerateMidiAsync(
       return; // Cancel this regeneration since newer assignments exist
     }
 
-    // Get MusicXML content from S3
-    const { url: musicxmlUrl } = await storageGet(musicxmlKey, 300);
-    const musicxmlResponse = await fetch(musicxmlUrl);
-    const musicxmlContent = await musicxmlResponse.text();
+    // Read MusicXML content directly from disk
+    const { filePath: musicxmlFilePath } = await storageGet(musicxmlKey, 300);
+    const musicxmlContent = await fs.readFile(musicxmlFilePath, 'utf-8');
 
     // Call Python service to generate MIDI
     const formData = new FormData();
     formData.append('musicxml', musicxmlContent);
     formData.append('voice_assignments', JSON.stringify(voiceAssignments));
 
+    const midiController = new AbortController();
+    const midiTimeoutId = setTimeout(() => midiController.abort(), 30000);
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
+      signal: midiController.signal as any,
     });
+    clearTimeout(midiTimeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
