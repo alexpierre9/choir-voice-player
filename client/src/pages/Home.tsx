@@ -11,7 +11,7 @@ export default function Home() {
   const { user, isAuthenticated, logout, loading } = useAuth();
   const [, setLocation] = useLocation();
 
-  const { data: userSheets } = trpc.sheetMusic.list.useQuery(undefined, {
+  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
     enabled: isAuthenticated,
   });
 
@@ -92,7 +92,11 @@ export default function Home() {
               Your Recent Uploads
             </h3>
 
-            {userSheets && userSheets.length > 0 ? (
+            {sheetsError ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Could not load your uploads. Please refresh the page.
+              </p>
+            ) : userSheets && userSheets.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {userSheets.slice(0, 6).map((sheet) => (
                   <Card

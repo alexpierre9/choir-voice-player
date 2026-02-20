@@ -4,7 +4,7 @@ import { Midi } from "@tonejs/midi";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Card } from "@/components/ui/card";
-import { Play, Pause, Square, Volume2, VolumeX } from "lucide-react";
+import { Play, Pause, Square, Volume2, VolumeX, Loader2, AlertCircle } from "lucide-react";
 
 interface VoiceControl {
   voice: string;
@@ -24,6 +24,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const [duration, setDuration] = useState(0);
   const [voiceControls, setVoiceControls] = useState<VoiceControl[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const synthsRef = useRef<Map<string, Tone.PolySynth>>(new Map());
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
@@ -128,6 +129,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
         setIsLoading(false);
       } catch (error) {
         console.error("Failed to load MIDI files:", error);
+        setLoadError("Failed to load MIDI files. Please refresh the page and try again.");
         setIsLoading(false);
       }
     };
@@ -290,6 +292,17 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-blue-500 dark:text-blue-400" />
           <p className="text-sm text-gray-600 dark:text-gray-300">Loading MIDI player...</p>
           <span className="sr-only">Loading musical playback controls</span>
+        </div>
+      </Card>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="p-6 bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800">
+        <div className="flex items-center gap-3 text-red-700 dark:text-red-400">
+          <AlertCircle className="h-5 w-5 flex-shrink-0" />
+          <p className="text-sm">{loadError}</p>
         </div>
       </Card>
     );

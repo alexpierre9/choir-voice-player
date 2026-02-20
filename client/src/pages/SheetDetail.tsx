@@ -30,6 +30,7 @@ export default function SheetDetail() {
   const [, params] = useRoute("/sheet/:id");
   const [, setLocation] = useLocation();
   const sheetId = params?.id || "";
+  const utils = trpc.useUtils();
 
   const [voiceAssignments, setVoiceAssignments] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
@@ -50,15 +51,6 @@ export default function SheetDetail() {
     }
   );
 
-  // Show loading state while checking authentication
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
-
   const updateVoicesMutation = trpc.sheetMusic.updateVoiceAssignments.useMutation({
     onSuccess: () => {
       toast.success("Voice assignments updated!");
@@ -69,6 +61,15 @@ export default function SheetDetail() {
       toast.error(`Failed to update: ${error.message}`);
     },
   });
+
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   // Initialize voice assignments from sheet data
   useEffect(() => {
@@ -91,7 +92,7 @@ export default function SheetDetail() {
           if (isCancelled) break; // Check if component unmounted
           
           try {
-            const result = await trpc.sheetMusic.getMidiUrl.query({
+            const result = await utils.sheetMusic.getMidiUrl.fetch({
               id: sheetId,
               voice,
             });
