@@ -5,7 +5,7 @@ import { existsSync, createReadStream } from 'fs';
 import { mkdir } from 'fs/promises';
 
 const STORAGE_DIR = process.env.LOCAL_STORAGE_DIR || '/var/lib/choir-files';
-const PUBLIC_URL_BASE = process.env.PUBLIC_URL_BASE || 'https://babtech.io/files';
+const PUBLIC_URL_BASE = process.env.PUBLIC_URL_BASE || '/files';
 
 // Ensure storage directory exists
 async function ensureStorageDir() {
@@ -73,7 +73,8 @@ export function createFileServerHandler() {
     const filePath = path.join(STORAGE_DIR, req.path.replace(/^\/files/, ''));
     
     if (!existsSync(filePath)) {
-      return next();
+      res.status(404).json({ error: 'File not found' });
+      return;
     }
     
     // Simple static file serving
