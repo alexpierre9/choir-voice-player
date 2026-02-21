@@ -87,29 +87,28 @@ class MusicProcessor:
             raise RuntimeError("GEMINI_API_KEY is not set")
         
         # Convert first page of PDF to image
-        images = convert_from_path(pdf_path, first_page=1, last_page=1, dpi=300)
+        images = convert_from_path(pdf_path, dpi=300)
         
         if not images:
             raise ValueError("Could not extract images from PDF")
         
-        # Save image temporarily
-        img = images[0]
-        
-        print(f"Running Gemini Vision OMR on {pdf_path}...")
+        print(f"Running Gemini Vision OMR on {pdf_path} ({len(images)} page(s))...")
         
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
             model = genai.GenerativeModel(model_name)
             
-            prompt = """
-            Transcribe this sheet music image into valid MusicXML format.
-            Capture all parts, voices, notes, rhythms, and key signatures accurately.
-            Return ONLY the raw MusicXML code.
+            prompt = f"""
+            Transcribe this sheet music into valid MusicXML format.
+            This score spans {len(images)} page(s) — all pages are provided in order.
+            Capture ALL parts, voices, notes, rhythms, and key signatures across every page.
+            Return ONLY the raw MusicXML code for the complete score.
             Do not include any markdown formatting (like ```xml).
             Start with <?xml and end with </score-partwise>.
             """
             
-            response = model.generate_content([prompt, img])
+            # Send all pages to Gemini in one request
+            response = model.generate_content([prompt, *images])
             content = response.text
             
             # Clean up potential markdown formatting
@@ -244,7 +243,6 @@ class MusicProcessor:
         # If no keyword match, use pitch range primarily
         if pitch_range:
             min_pitch, max_pitch = pitch_range
-            avg_pitch = (min_pitch + max_pitch) / 2
 
             # Calculate overlap with each voice range
             best_match = VoiceType.OTHER
@@ -310,7 +308,10 @@ class MusicProcessor:
         voice_parts: Dict[str, List[stream.Part]] = {}
         
         for part_idx, part in enumerate(score.parts):
-            voice_type = voice_assignments.get(part_idx, VoiceType.OTHER)
+            # Voice assignments come from JS/JSON where keys are always strings ("0", "1", …).
+            # Normalize to string so both str and int keys work.
+            str_part_idx = str(part_idx)
+            voice_type = voice_assignments.get(str_part_idx, voice_assignments.get(part_idx, VoiceType.OTHER))
             
             if voice_type not in voice_parts:
                 voice_parts[voice_type] = []

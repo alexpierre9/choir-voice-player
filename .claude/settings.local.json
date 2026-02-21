@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm check:*)",
+      "Bash(pnpm install:*)",
+      "Bash(git stash:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(ssh:*)",
+      "Bash(xxd:*)",
+      "Bash(ssh-keygen:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "firebase",
+    "context7",
+    "taskmaster",
+    "filesystem",
+    "desktop-commander",
+    "playwright",
+    "puppeteer",
+    "duckduckgo",
+    "sequential-thinking",
+    "github",
+    "memory",
+    "n8n-mcp",
+    "ref-tools"
+  ]
+}

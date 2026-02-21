@@ -176,7 +176,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const startPlayback = async () => {
     await Tone.start();
 
-    // Start all parts
+    // Cancel previously scheduled events and re-schedule parts from the beginning.
+    // This prevents doubled notes if the user plays → stops → plays again.
+    Tone.getTransport().cancel(0);
+    Tone.getTransport().seconds = 0;
+
+    // Start all parts from beat 0
     partsRef.current.forEach(part => {
       part.start(0);
     });
@@ -207,6 +212,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   const stopPlayback = () => {
     Tone.getTransport().stop();
+    Tone.getTransport().seconds = 0; // Reset position so replay starts from beginning
     setIsPlaying(false);
     setProgress(0);
 

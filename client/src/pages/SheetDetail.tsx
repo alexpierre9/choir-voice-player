@@ -62,15 +62,6 @@ export default function SheetDetail() {
     },
   });
 
-  // Show loading state while checking authentication
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
-
   // Initialize voice assignments from sheet data
   useEffect(() => {
     if (sheet?.voiceAssignments) {
@@ -121,6 +112,15 @@ export default function SheetDetail() {
       isCancelled = true;
     };
   }, [sheet?.status, sheet?.midiFileKeys, sheetId]); // Only re-run when status or midiFileKeys change
+
+  // Show loading state while checking authentication (must be after all hooks)
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   const handleVoiceChange = (partIndex: string, newVoice: string) => {
     setVoiceAssignments((prev) => ({

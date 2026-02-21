@@ -65,19 +65,21 @@ async function startServer() {
   // Apply general rate limiting to all requests
   app.use(generalLimiter);
 
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Configure body parser with larger size limit for file uploads.
+  // NOTE: A 50MB binary file base64-encodes to ~67MB of JSON, so the body limit
+  // must be large enough to accommodate that overhead. 100mb covers files up to ~75MB.
+  app.use(express.json({ limit: "100mb" }));
+  app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
   // Apply stricter rate limiting to upload endpoint
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
 
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
-  
+
   // Static file serving for uploaded files (MIDI, PDFs, etc.)
   app.use("/files", createFileServerHandler());
-  
+
   // tRPC API
   app.use(
     "/api/trpc",

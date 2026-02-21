@@ -4,12 +4,12 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
-import { 
-  createSheetMusic, 
-  updateSheetMusic, 
-  getSheetMusic, 
+import {
+  createSheetMusic,
+  updateSheetMusic,
+  getSheetMusic,
   getUserSheetMusic,
-  deleteSheetMusic 
+  deleteSheetMusic
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-local";
 import FormData from "form-data";
@@ -55,7 +55,7 @@ export const appRouter = router({
           throw new Error(`File size exceeds maximum allowed size of ${maxSize / (1024 * 1024)}MB`);
         }
 
-        // Upload original file to S3
+        // Save original file to local storage
         const fileExtension = input.fileType === "pdf" ? "pdf" : "musicxml";
         const originalFileKey = `sheet-music/${userId}/${sheetId}/original.${fileExtension}`;
 
@@ -64,10 +64,10 @@ export const appRouter = router({
           fileBuffer,
           input.fileType === "pdf" ? "application/pdf" : "application/xml"
         );
-        
+
         // Create database record
         const title = input.title || input.filename.replace(/\.[^/.]+$/, "");
-        
+
         await createSheetMusic({
           id: sheetId,
           userId,
@@ -77,7 +77,7 @@ export const appRouter = router({
           originalFileKey: uploadedKey,
           status: "processing",
         });
-        
+
         // Process file asynchronously
         processSheetMusicAsync(sheetId, fileBuffer, input.fileType).catch(async err => {
           console.error(`Failed to process sheet music ${sheetId}:`, err);
@@ -90,37 +90,37 @@ export const appRouter = router({
             console.error(`Failed to update error status for sheet music ${sheetId}:`, updateErr);
           }
         });
-        
+
         return {
           id: sheetId,
           status: "processing",
         };
       }),
-    
+
     // Get sheet music by ID
     get: protectedProcedure
       .input(z.object({ id: z.string() }))
       .query(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
-        
+
         if (!sheet) {
           throw new Error("Sheet music not found");
         }
-        
+
         // Check ownership
         if (sheet.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
-        
+
         return sheet;
       }),
-    
+
     // List user's sheet music
     list: protectedProcedure
       .query(async ({ ctx }) => {
         return await getUserSheetMusic(ctx.user.id);
       }),
-    
+
     // Update voice assignments and regenerate MIDI
     updateVoiceAssignments: protectedProcedure
       .input(z.object({
@@ -129,30 +129,30 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
-        
+
         if (!sheet) {
           throw new Error("Sheet music not found");
         }
-        
+
         if (sheet.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
-        
+
         // Update voice assignments
         await updateSheetMusic(input.id, {
           voiceAssignments: input.voiceAssignments as any,
         });
-        
+
         // Regenerate MIDI files
         if (sheet.musicxmlKey) {
           regenerateMidiAsync(sheet.userId, input.id, sheet.musicxmlKey, input.voiceAssignments).catch(err => {
             console.error(`Failed to regenerate MIDI for ${input.id}:`, err);
           });
         }
-        
+
         return { success: true };
       }),
-    
+
     // Get MIDI file URL
     getMidiUrl: protectedProcedure
       .input(z.object({
@@ -161,49 +161,49 @@ export const appRouter = router({
       }))
       .query(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
-        
+
         if (!sheet) {
           throw new Error("Sheet music not found");
         }
-        
+
         if (sheet.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
-        
+
         if (!sheet.midiFileKeys) {
           throw new Error("MIDI files not generated yet");
         }
-        
+
         const midiKeys = sheet.midiFileKeys as Record<string, string>;
         const midiKey = midiKeys[input.voice];
-        
+
         if (!midiKey) {
           throw new Error(`MIDI file for voice ${input.voice} not found`);
         }
-        
+
         // Generate presigned URL (5 minutes)
         const { url } = await storageGet(midiKey, 300);
-        
+
         return { url };
       }),
-    
+
     // Delete sheet music
     delete: protectedProcedure
       .input(z.object({ id: z.string() }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
-        
+
         if (!sheet) {
           throw new Error("Sheet music not found");
         }
-        
+
         if (sheet.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
-        
+
         // Delete S3 files asynchronously (don't block on failures)
         const deletePromises: Promise<void>[] = [];
-        
+
         if (sheet.originalFileKey) {
           deletePromises.push(
             storageDelete(sheet.originalFileKey).catch(err => {
@@ -211,7 +211,7 @@ export const appRouter = router({
             })
           );
         }
-        
+
         if (sheet.musicxmlKey) {
           deletePromises.push(
             storageDelete(sheet.musicxmlKey).catch(err => {
@@ -219,7 +219,7 @@ export const appRouter = router({
             })
           );
         }
-        
+
         if (sheet.midiFileKeys) {
           const midiKeys = sheet.midiFileKeys as Record<string, string>;
           for (const voiceType of Object.keys(midiKeys)) {
@@ -233,12 +233,12 @@ export const appRouter = router({
             }
           }
         }
-        
+
         // Wait for all deletions to complete (with individual error handling)
         await Promise.all(deletePromises);
-        
+
         await deleteSheetMusic(input.id);
-        
+
         return { success: true };
       }),
   }),
@@ -259,45 +259,45 @@ async function processSheetMusicAsync(
       filename: `file.${fileType === "pdf" ? "pdf" : "musicxml"}`,
       contentType: fileType === "pdf" ? "application/pdf" : "application/xml",
     });
-    
+
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s — multi-page PDFs take longer
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
       signal: controller.signal as any,
     });
     clearTimeout(timeoutId);
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Python service error: ${errorText}`);
     }
-    
+
     const result = await response.json() as {
       success: boolean;
       musicxml: string;
       analysis: any;
     };
-    
+
     if (!result.success) {
       throw new Error("Processing failed");
     }
-    
-    // Upload MusicXML to S3
+
+    // Upload MusicXML to local storage
     const sheet = await getSheetMusic(sheetId);
     if (!sheet) throw new Error("Sheet not found");
-    
+
     const musicxmlKey = `sheet-music/${sheet.userId}/${sheetId}/score.musicxml`;
     await storagePut(musicxmlKey, result.musicxml, "application/xml");
-    
+
     // Create initial voice assignments from analysis
     const voiceAssignments: Record<string, string> = {};
     for (const part of result.analysis.parts) {
       voiceAssignments[part.index.toString()] = part.detected_voice;
     }
-    
+
     // Update database with analysis results
     await updateSheetMusic(sheetId, {
       status: "ready",
@@ -305,10 +305,10 @@ async function processSheetMusicAsync(
       analysisResult: result.analysis,
       voiceAssignments,
     });
-    
+
     // Generate MIDI files
     await regenerateMidiAsync(sheet.userId, sheetId, musicxmlKey, voiceAssignments);
-    
+
   } catch (error) {
     console.error("Processing error:", error);
     await updateSheetMusic(sheetId, {
@@ -338,9 +338,16 @@ async function regenerateMidiAsync(
       return; // Cancel this regeneration since newer assignments exist
     }
 
-    // Read MusicXML content directly from disk
-    const { filePath: musicxmlFilePath } = await storageGet(musicxmlKey, 300);
-    const musicxmlContent = await fs.readFile(musicxmlFilePath, 'utf-8');
+    // Read MusicXML content — supports both local (filePath) and cloud (URL) storage adapters
+    const storageResult = await storageGet(musicxmlKey, 300);
+    let musicxmlContent: string;
+    if ('filePath' in storageResult && storageResult.filePath) {
+      musicxmlContent = await fs.readFile(storageResult.filePath, 'utf-8');
+    } else {
+      const fileRes = await fetch(storageResult.url);
+      if (!fileRes.ok) throw new Error(`Failed to fetch MusicXML from storage: ${fileRes.statusText}`);
+      musicxmlContent = await fileRes.text();
+    }
 
     // Call Python service to generate MIDI
     const formData = new FormData();
@@ -348,7 +355,7 @@ async function regenerateMidiAsync(
     formData.append('voice_assignments', JSON.stringify(voiceAssignments));
 
     const midiController = new AbortController();
-    const midiTimeoutId = setTimeout(() => midiController.abort(), 30000);
+    const midiTimeoutId = setTimeout(() => midiController.abort(), 60000); // 60s for MIDI generation
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
@@ -381,7 +388,7 @@ async function regenerateMidiAsync(
       return; // Cancel this update since newer assignments exist
     }
 
-    // Upload MIDI files to S3
+    // Save MIDI files to local storage
     const midiFileKeys: Record<string, string> = {};
 
     for (const [voiceType, base64Data] of Object.entries(result.midi_files)) {

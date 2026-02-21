@@ -134,8 +134,8 @@ export default function Upload() {
         <Card className="p-8">
           <div className="space-y-6">
             <div>
-              <h2 className="text-2xl font-semibold mb-4">Upload Sheet Music</h2>
-              <p className="text-gray-600 mb-6">
+              <h2 className="text-2xl font-semibold mb-4">Choose a file to analyze</h2>
+              <p className="text-gray-600 dark:text-gray-300 mb-6">
                 Upload a PDF or MusicXML file. We'll analyze it and let you play
                 each voice part separately.
               </p>
@@ -237,9 +237,9 @@ export default function Upload() {
             )}
 
             {/* Info */}
-            <div className="mt-8 p-4 bg-blue-50 rounded-lg">
-              <h3 className="font-semibold mb-2">How it works:</h3>
-              <ol className="list-decimal list-inside space-y-1 text-sm text-gray-700">
+            <div className="mt-8 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
+              <h3 className="font-semibold mb-2 dark:text-gray-100">How it works:</h3>
+              <ol className="list-decimal list-inside space-y-1 text-sm text-gray-700 dark:text-gray-300">
                 <li>Upload your PDF or MusicXML choir sheet music</li>
                 <li>We automatically detect Soprano, Alto, Tenor, and Bass voices</li>
                 <li>Adjust voice assignments if needed</li>

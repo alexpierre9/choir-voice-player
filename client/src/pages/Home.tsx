@@ -31,10 +31,10 @@ export default function Home() {
       {/* Hero Section */}
       <div className="container mx-auto px-6 py-16">
         <div className="text-center mb-12">
-          <h2 className="text-4xl font-bold text-gray-900 mb-4">
+          <h2 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">
             Play Every Voice in Your Choir
           </h2>
-          <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
+          <p className="text-xl text-gray-600 dark:text-gray-300 mb-8 max-w-2xl mx-auto">
             Upload sheet music and hear each SATB voice part individually. Perfect
             for choir practice, learning, and arrangement analysis.
           </p>
@@ -56,7 +56,7 @@ export default function Home() {
               <Upload className="h-8 w-8 text-info dark:text-info" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Easy Upload</h3>
-            <p className="text-gray-600">
+            <p className="text-gray-600 dark:text-gray-300">
               Upload PDF or MusicXML files. Our AI analyzes the sheet music
               automatically.
             </p>
@@ -67,7 +67,7 @@ export default function Home() {
               <Users className="h-8 w-8 text-success dark:text-success" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Auto Voice Detection</h3>
-            <p className="text-gray-600">
+            <p className="text-gray-600 dark:text-gray-300">
               Automatically detects Soprano, Alto, Tenor, and Bass parts with
               manual override options.
             </p>
@@ -78,7 +78,7 @@ export default function Home() {
               <Volume2 className="h-8 w-8 text-purple dark:text-purple" />
             </div>
             <h3 className="text-xl font-semibold mb-2">Individual Playback</h3>
-            <p className="text-gray-600">
+            <p className="text-gray-600 dark:text-gray-300">
               Play each voice separately or together. Control volume and mute
               individual parts.
             </p>
@@ -157,7 +157,7 @@ export default function Home() {
 
         {/* How It Works */}
         <div className="mt-16">
-          <h3 className="text-2xl font-bold text-center text-gray-900 mb-8">
+          <h3 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-8">
             How It Works
           </h3>
           <div className="max-w-3xl mx-auto space-y-6">
@@ -168,7 +168,7 @@ export default function Home() {
                 </div>
                 <div>
                   <h4 className="font-semibold text-lg mb-1">Upload Your Score</h4>
-                  <p className="text-gray-600">
+                  <p className="text-gray-600 dark:text-gray-300">
                     Upload a PDF or MusicXML file of your choir arrangement. We
                     support both scanned PDFs (using optical music recognition) and
                     digital MusicXML files.
@@ -186,7 +186,7 @@ export default function Home() {
                   <h4 className="font-semibold text-lg mb-1">
                     Automatic Voice Detection
                   </h4>
-                  <p className="text-gray-600">
+                  <p className="text-gray-600 dark:text-gray-300">
                     Our system analyzes the sheet music and automatically identifies
                     which parts belong to Soprano, Alto, Tenor, and Bass based on
                     clefs, pitch ranges, and part names.
@@ -204,7 +204,7 @@ export default function Home() {
                   <h4 className="font-semibold text-lg mb-1">
                     Review and Adjust
                   </h4>
-                  <p className="text-gray-600">
+                  <p className="text-gray-600 dark:text-gray-300">
                     Check the detected voice assignments. If needed, manually adjust
                     which parts correspond to which voices using the dropdown menus.
                   </p>
@@ -221,7 +221,7 @@ export default function Home() {
                   <h4 className="font-semibold text-lg mb-1">
                     Play and Practice
                   </h4>
-                  <p className="text-gray-600">
+                  <p className="text-gray-600 dark:text-gray-300">
                     Use the MIDI player to play each voice individually or together.
                     Control the volume of each part, mute voices, and follow along
                     with your score.
