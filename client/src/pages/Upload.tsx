@@ -1,5 +1,4 @@
 import { useState, useRef } from "react";
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import Header from "@/components/Header";
@@ -11,7 +10,6 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 
 export default function Upload() {
-  const { user, isAuthenticated, loading } = useAuth({ redirectOnUnauthenticated: true });
   const [, setLocation] = useLocation();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -29,26 +27,14 @@ export default function Upload() {
     },
   });
 
-  // Show loading state while checking authentication
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
-
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Validate file size (50MB limit to match backend)
-      if (file.size > 50 * 1024 * 1024) {
+      if (file.size > 50 * 1024 * 1024) { // 50MB limit
         toast.error("File too large. Maximum size is 50MB");
         return;
       }
-
       setSelectedFile(file);
-      // Always update title when a new file is selected
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
     }
   };
@@ -59,64 +45,42 @@ export default function Upload() {
       return;
     }
 
-    if (!isAuthenticated) {
-      toast.error("Please log in to upload files");
-      return;
-    }
-
     setIsUploading(true);
 
-    try {
-      // Read file as base64
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64Data = e.target?.result as string;
-        const base64Content = base64Data.split(",")[1];
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target?.result as string;
+      const base64Content = base64Data.split(",")[1];
+      const fileType = selectedFile.name.toLowerCase().endsWith(".pdf") ? "pdf" : "musicxml";
 
-        // Determine file type
-        const fileType = selectedFile.name.toLowerCase().endsWith(".pdf")
-          ? "pdf"
-          : "musicxml";
-
-        await uploadMutation.mutateAsync({
-          filename: selectedFile.name,
-          fileType,
-          fileData: base64Content,
-          title: title || selectedFile.name,
-        });
-      };
-
-      reader.onerror = () => {
-        toast.error("Failed to read file");
-        setIsUploading(false);
-      };
-
-      reader.readAsDataURL(selectedFile);
-    } catch (error) {
-      console.error("Upload error:", error);
+      await uploadMutation.mutateAsync({
+        filename: selectedFile.name,
+        fileType,
+        fileData: base64Content,
+        title: title || selectedFile.name,
+      });
+    };
+    reader.onerror = () => {
+      toast.error("Failed to read file");
       setIsUploading(false);
-    }
+    };
+    reader.readAsDataURL(selectedFile);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file) {
-      // Validate file size (50MB limit to match backend)
       if (file.size > 50 * 1024 * 1024) {
         toast.error("File too large. Maximum size is 50MB");
         return;
       }
-
       setSelectedFile(file);
-      // Always update title when a new file is selected
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
     }
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
+  const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-6">
@@ -133,29 +97,15 @@ export default function Upload() {
 
         <Card className="p-8">
           <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold mb-4">Choose a file to analyze</h2>
-              <p className="text-gray-600 dark:text-gray-300 mb-6">
-                Upload a PDF or MusicXML file. We'll analyze it and let you play
-                each voice part separately.
-              </p>
-            </div>
-
-            {/* File Upload Area */}
             <div
               role="button"
               tabIndex={0}
-              aria-label="Upload sheet music file. Drop file here or press Enter to select from computer. Accepts PDF and MusicXML files up to 50MB."
+              aria-label="Upload sheet music file"
               className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
               onClick={() => fileInputRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  fileInputRef.current?.click();
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
             >
               <input
                 ref={fileInputRef}
@@ -192,14 +142,13 @@ export default function Upload() {
                       Drop your file here or click to browse
                     </p>
                     <p className="text-sm text-gray-500">
-                      Supports PDF and MusicXML (.xml, .musicxml, .mxl)
+                      Supports PDF and MusicXML
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Title Input */}
             <div className="space-y-2">
               <Label htmlFor="title">Title (optional)</Label>
               <Input
@@ -210,10 +159,9 @@ export default function Upload() {
               />
             </div>
 
-            {/* Upload Button */}
             <Button
               onClick={handleUpload}
-              disabled={!selectedFile || isUploading || !isAuthenticated}
+              disabled={!selectedFile || isUploading}
               className="w-full"
               size="lg"
             >
@@ -229,12 +177,6 @@ export default function Upload() {
                 </>
               )}
             </Button>
-
-            {!isAuthenticated && (
-              <p className="text-sm text-center text-amber-600">
-                Please log in to upload files
-              </p>
-            )}
 
             {/* Info */}
             <div className="mt-8 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
@@ -252,4 +194,3 @@ export default function Upload() {
     </div>
   );
 }
-
