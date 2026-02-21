@@ -1,11 +1,9 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, Music, Loader2 } from "lucide-react";
+import { Moon, Sun, Music } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 
 export default function Header() {
-  const { user, isAuthenticated, logout, loading } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
   return (
@@ -31,26 +29,6 @@ export default function Header() {
               ) : (
                 <Moon className="h-5 w-5 text-gray-700" />
               )}
-            </Button>
-          )}
-
-          {loading ? (
-            <Button variant="outline" disabled className="dark:border-gray-600 dark:text-white">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading...
-            </Button>
-          ) : isAuthenticated ? (
-            <>
-              <span className="text-sm text-gray-600 dark:text-gray-300 hidden sm:inline">
-                {user?.name || user?.email}
-              </span>
-              <Button variant="outline" onClick={() => logout()} className="dark:border-gray-600 dark:text-white">
-                Log Out
-              </Button>
-            </>
-          ) : (
-            <Button onClick={() => window.location.href = getLoginUrl()} className="dark:bg-blue-600 dark:hover:bg-blue-700">
-              Log In
             </Button>
           )}
         </div>

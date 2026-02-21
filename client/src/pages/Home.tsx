@@ -2,27 +2,16 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import Header from "@/components/Header";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
-import { Music, Upload, Users, Volume2, Loader2 } from "lucide-react";
+import { APP_TITLE } from "@/const";
+import { Music, Upload, Users, Volume2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 
 export default function Home() {
-  const { user, isAuthenticated, logout, loading } = useAuth();
+  const { user } = useAuth();
   const [, setLocation] = useLocation();
 
-  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
-
-  // Show loading state while checking authentication
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
+  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
@@ -86,74 +75,72 @@ export default function Home() {
         </div>
 
         {/* Recent Uploads */}
-        {isAuthenticated && (
-          <div>
-            <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
-              Your Recent Uploads
-            </h3>
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+            Your Recent Uploads
+          </h3>
 
-            {sheetsError ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Could not load your uploads. Please refresh the page.
-              </p>
-            ) : userSheets && userSheets.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {userSheets.slice(0, 6).map((sheet) => (
-                  <Card
-                    key={sheet.id}
-                    className="p-4 hover:shadow-lg transition-shadow cursor-pointer dark:bg-gray-800 dark:border-gray-700"
-                    onClick={() => setLocation(`/sheet/${sheet.id}`)}
-                  >
-                    <div className="flex items-start gap-3">
-                      <Music className="h-6 w-6 text-blue-500 flex-shrink-0 mt-1 dark:text-blue-400" />
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold truncate dark:text-white">{sheet.title}</h4>
-                        <p className="text-sm text-gray-500 truncate dark:text-gray-400">
-                          {sheet.originalFilename}
-                        </p>
-                        <div className="mt-2">
-                          {sheet.status === "ready" && (
-                            <span className="text-xs bg-success-light text-success px-2 py-1 rounded dark:bg-success-light/30 dark:text-success">
-                              Ready
-                            </span>
-                          )}
-                          {sheet.status === "processing" && (
-                            <span className="text-xs bg-info-light text-info px-2 py-1 rounded dark:bg-info-light/30 dark:text-info">
-                              Processing...
-                            </span>
-                          )}
-                          {sheet.status === "error" && (
-                            <span className="text-xs bg-error-light text-error px-2 py-1 rounded dark:bg-error-light/30 dark:text-error">
-                              Error
-                            </span>
-                          )}
-                        </div>
+          {sheetsError ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Could not load your uploads. Please refresh the page.
+            </p>
+          ) : userSheets && userSheets.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {userSheets.slice(0, 6).map((sheet) => (
+                <Card
+                  key={sheet.id}
+                  className="p-4 hover:shadow-lg transition-shadow cursor-pointer dark:bg-gray-800 dark:border-gray-700"
+                  onClick={() => setLocation(`/sheet/${sheet.id}`)}
+                >
+                  <div className="flex items-start gap-3">
+                    <Music className="h-6 w-6 text-blue-500 flex-shrink-0 mt-1 dark:text-blue-400" />
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-semibold truncate dark:text-white">{sheet.title}</h4>
+                      <p className="text-sm text-gray-500 truncate dark:text-gray-400">
+                        {sheet.originalFilename}
+                      </p>
+                      <div className="mt-2">
+                        {sheet.status === "ready" && (
+                          <span className="text-xs bg-success-light text-success px-2 py-1 rounded dark:bg-success-light/30 dark:text-success">
+                            Ready
+                          </span>
+                        )}
+                        {sheet.status === "processing" && (
+                          <span className="text-xs bg-info-light text-info px-2 py-1 rounded dark:bg-info-light/30 dark:text-info">
+                            Processing...
+                          </span>
+                        )}
+                        {sheet.status === "error" && (
+                          <span className="text-xs bg-error-light text-error px-2 py-1 rounded dark:bg-error-light/30 dark:text-error">
+                            Error
+                          </span>
+                        )}
                       </div>
                     </div>
-                  </Card>
-                ))}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Card className="p-12 text-center dark:bg-gray-800 dark:border-gray-700">
+              <div className="mx-auto max-w-md">
+                <Music className="h-16 w-16 text-info mx-auto mb-4 dark:text-info" />
+                <h4 className="text-xl font-semibold mb-2 dark:text-white">No Sheet Music Yet</h4>
+                <p className="text-gray-600 mb-6 dark:text-gray-300">
+                  You haven't uploaded any sheet music yet. Get started by uploading your first score.
+                </p>
+                <Button
+                  size="lg"
+                  onClick={() => setLocation("/upload")}
+                  className="dark:bg-blue-600 dark:hover:bg-blue-700"
+                >
+                  <Upload className="mr-2 h-5 w-5" />
+                  Upload Sheet Music
+                </Button>
               </div>
-            ) : (
-              <Card className="p-12 text-center dark:bg-gray-800 dark:border-gray-700">
-                <div className="mx-auto max-w-md">
-                  <Music className="h-16 w-16 text-info mx-auto mb-4 dark:text-info" />
-                  <h4 className="text-xl font-semibold mb-2 dark:text-white">No Sheet Music Yet</h4>
-                  <p className="text-gray-600 mb-6 dark:text-gray-300">
-                    You haven't uploaded any sheet music yet. Get started by uploading your first score.
-                  </p>
-                  <Button
-                    size="lg"
-                    onClick={() => setLocation("/upload")}
-                    className="dark:bg-blue-600 dark:hover:bg-blue-700"
-                  >
-                    <Upload className="mr-2 h-5 w-5" />
-                    Upload Sheet Music
-                  </Button>
-                </div>
-              </Card>
-            )}
-          </div>
-        )}
+            </Card>
+          )}
+        </div>
 
         {/* How It Works */}
         <div className="mt-16">
@@ -242,4 +229,3 @@ export default function Home() {
     </div>
   );
 }
-

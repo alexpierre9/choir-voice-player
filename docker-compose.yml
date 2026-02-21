@@ -8,7 +8,7 @@ services:
       - "8001:8001"
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-$(openssl rand -base64 32)}
       - VITE_APP_ID=${VITE_APP_ID}
       - OAUTH_SERVER_URL=${OAUTH_SERVER_URL}
       - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL}

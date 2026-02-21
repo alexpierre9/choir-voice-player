@@ -109,7 +109,7 @@ Edit the following values:
 
 ```env
 # Database (from Step 5)
-DATABASE_URL=mysql://choirapp:YOUR_PASSWORD@localhost:3306/choir_voice_player
+DATABASE_URL=<SECURE_PASSWORD>
 
 # JWT Secret (generate with: openssl rand -base64 32)
 JWT_SECRET=your-generated-secret-here
@@ -275,7 +275,7 @@ crontab -e
 
 Add:
 ```
-0 2 * * * mysqldump -u choirapp -pYOUR_PASSWORD choir_voice_player > /backups/db-$(date +\%Y\%m\%d).sql
+0 2 * * * mysqldump -u choirapp -p<SECURE_PASSWORD> choir_voice_player > /backups/db-$(date +\%Y\%m\%d).sql
 ```
 
 ## Troubleshooting
