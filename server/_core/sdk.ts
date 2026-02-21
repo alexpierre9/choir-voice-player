@@ -69,7 +69,9 @@ class SDKServer {
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || !isNonEmptyString(name)) {
+      // `name` may be an empty string for Google accounts without a display
+      // name, so only require that it is a string — not a non-empty one.
+      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || typeof name !== "string") {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
@@ -96,7 +98,8 @@ class SDKServer {
       throw ForbiddenError("User not found");
     }
 
-    await db.upsertUser({ id: user.id, lastSignedIn: new Date() });
+    // `lastSignedIn` is updated in the OAuth callback when a session is
+    // created — we do not update it here to avoid a DB write on every request.
     return user;
   }
 }

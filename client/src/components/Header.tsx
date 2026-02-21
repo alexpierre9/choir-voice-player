@@ -1,10 +1,12 @@
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, Music } from "lucide-react";
+import { Moon, Sun, Music, LogIn, LogOut } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
-import { APP_LOGO, APP_TITLE } from "@/const";
+import { APP_TITLE } from "@/const";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function Header() {
   const { theme, toggleTheme } = useTheme();
+  const { user, isAuthenticated, isLoading, login, logout } = useAuth();
 
   return (
     <header className="border-b bg-white/80 backdrop-blur-sm dark:bg-gray-900/80 dark:border-gray-700">
@@ -30,6 +32,38 @@ export default function Header() {
                 <Moon className="h-5 w-5 text-gray-700" />
               )}
             </Button>
+          )}
+
+          {/* Auth controls — hidden while the session is being checked */}
+          {!isLoading && (
+            isAuthenticated ? (
+              <div className="flex items-center gap-3">
+                {user?.name && (
+                  <span className="text-sm text-gray-600 dark:text-gray-300 hidden sm:block">
+                    {user.name}
+                  </span>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={logout}
+                  aria-label="Sign out"
+                >
+                  <LogOut className="h-4 w-4 mr-1" />
+                  Sign out
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => login()}
+                aria-label="Sign in with Google"
+              >
+                <LogIn className="h-4 w-4 mr-1" />
+                Sign in
+              </Button>
+            )
           )}
         </div>
       </div>
