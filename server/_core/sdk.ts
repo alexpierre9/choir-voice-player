@@ -69,9 +69,11 @@ class SDKServer {
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      // `name` may be an empty string for Google accounts without a display
-      // name, so only require that it is a string — not a non-empty one.
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || typeof name !== "string") {
+      // `appId` may be an empty string when VITE_APP_ID is not configured
+      // (email+password deployments often skip this env var), so we only
+      // require that it is *a* string rather than a non-empty one.
+      // `name` may also be empty for accounts with no display name set.
+      if (!isNonEmptyString(openId) || typeof appId !== "string" || typeof name !== "string") {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }

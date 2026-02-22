@@ -8,8 +8,12 @@ import { Upload as UploadIcon, FileMusic, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function Upload() {
+  // Redirect to /login (with return path) if the user is not authenticated.
+  useAuth({ redirectOnUnauthenticated: true });
+
   const [, setLocation] = useLocation();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
