@@ -3,6 +3,17 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
+/** Fields returned for authenticated sessions — never includes passwordHash. */
+const safeUserFields = {
+  id: users.id,
+  name: users.name,
+  email: users.email,
+  loginMethod: users.loginMethod,
+  role: users.role,
+  createdAt: users.createdAt,
+  lastSignedIn: users.lastSignedIn,
+} as const;
+
 let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
@@ -35,7 +46,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     };
     const updateSet: Record<string, unknown> = {};
 
-    const textFields = ["name", "email", "loginMethod"] as const;
+    const textFields = ["name", "email", "loginMethod", "passwordHash"] as const;
     type TextField = (typeof textFields)[number];
 
     const assignNullable = (field: TextField) => {
@@ -73,6 +84,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 }
 
+/** Get a user by ID, excluding the passwordHash. */
 export async function getUser(id: string) {
   const db = await getDb();
   if (!db) {
@@ -80,7 +92,32 @@ export async function getUser(id: string) {
     return undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  const result = await db
+    .select(safeUserFields)
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * Get a user by email address.
+ * Includes passwordHash so the caller can verify credentials.
+ * Never expose the returned value directly to the client.
+ */
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get user: database not available");
+    return undefined;
+  }
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
 
   return result.length > 0 ? result[0] : undefined;
 }
