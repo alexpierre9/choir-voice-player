@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
+import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 /** Fields returned for authenticated sessions — never includes passwordHash. */
@@ -85,7 +85,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 }
 
 /** Get a user by ID, excluding the passwordHash. */
-export async function getUser(id: string) {
+export async function getUser(id: string): Promise<SafeUser | undefined> {
   const db = await getDb();
   if (!db) {
     console.warn("[Database] Cannot get user: database not available");
