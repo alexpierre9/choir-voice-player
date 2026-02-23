@@ -1,8 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 
-/** Fields returned for authenticated sessions — never includes passwordHash. */
 const safeUserFields = {
   id: users.id,
   name: users.name,
@@ -45,7 +44,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     };
     const updateSet: Record<string, unknown> = {};
 
-    const textFields = ["name", "email", "loginMethod", "passwordHash"] as const;
+    const textFields = ["name", "email", "loginMethod"] as const;
     type TextField = (typeof textFields)[number];
 
     const assignNullable = (field: TextField) => {
@@ -80,7 +79,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 }
 
-/** Get a user by ID, excluding the passwordHash. */
+/** Get a user by ID. */
 export async function getUser(id: string): Promise<SafeUser | undefined> {
   const db = await getDb();
   if (!db) {
@@ -154,3 +153,25 @@ export async function deleteSheetMusic(id: string): Promise<void> {
   });
 }
 
+/** Mark any sheet stuck in "processing" for more than `thresholdMs` ms as errored. */
+export async function markStaleProcessingSheets(thresholdMs = 5 * 60 * 1000): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const cutoff = new Date(Date.now() - thresholdMs);
+
+  const result = await db
+    .update(sheetMusic)
+    .set({
+      status: "error",
+      errorMessage: "Processing timed out. Please retry.",
+    })
+    .where(
+      and(
+        eq(sheetMusic.status, "processing"),
+        lt(sheetMusic.updatedAt, cutoff)
+      )
+    );
+
+  return (result as any)[0]?.affectedRows ?? 0;
+}

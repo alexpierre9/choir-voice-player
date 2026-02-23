@@ -1,4 +1,4 @@
-import { mysqlEnum, mysqlTable, text, timestamp, varchar, int, json, index, uniqueIndex } from "drizzle-orm/mysql-core";
+import { mysqlEnum, mysqlTable, text, timestamp, varchar, json, index } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -7,21 +7,15 @@ export const users = mysqlTable("users", {
   id: varchar("id", { length: 64 }).primaryKey(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
-  /** bcrypt hash — only set for email+password accounts. */
-  passwordHash: varchar("passwordHash", { length: 255 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   createdAt: timestamp("createdAt").defaultNow(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow(),
-}, (table) => ({
-  emailUniqueIdx: uniqueIndex("users_email_unique").on(table.email),
-}));
+});
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-
-/** User shape safe to send to the client — never includes passwordHash. */
-export type SafeUser = Omit<User, "passwordHash">;
+export type SafeUser = User;
 
 /**
  * Sheet music uploads and processing results
@@ -33,7 +27,7 @@ export const sheetMusic = mysqlTable("sheet_music", {
   originalFilename: varchar("originalFilename", { length: 255 }).notNull(),
   fileType: mysqlEnum("fileType", ["pdf", "musicxml"]).notNull(),
 
-  // S3 storage keys
+  // Storage keys
   originalFileKey: varchar("originalFileKey", { length: 512 }),
   musicxmlKey: varchar("musicxmlKey", { length: 512 }),
 
@@ -65,4 +59,3 @@ export const sheetMusic = mysqlTable("sheet_music", {
 
 export type SheetMusic = typeof sheetMusic.$inferSelect;
 export type InsertSheetMusic = typeof sheetMusic.$inferInsert;
-

@@ -169,6 +169,17 @@ export const appRouter = router({
         return sheet;
       }),
 
+    // Rename sheet music
+    rename: protectedProcedure
+      .input(z.object({ id: z.string(), title: z.string().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        const sheet = await getSheetMusic(input.id);
+        if (!sheet) throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
+        if (sheet.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
+        await updateSheetMusic(input.id, { title: input.title });
+        return { success: true };
+      }),
+
     // List user's sheet music
     list: protectedProcedure
       .query(async ({ ctx }) => {
@@ -303,6 +314,58 @@ export const appRouter = router({
 
         return { success: true };
       }),
+
+    // Retry failed processing
+    retry: protectedProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const sheet = await getSheetMusic(input.id);
+
+        if (!sheet) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
+        }
+
+        if (sheet.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
+        }
+
+        if (sheet.status !== "error") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Sheet music is not in an error state" });
+        }
+
+        if (!sheet.originalFileKey) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Original file not found; cannot retry" });
+        }
+
+        // Read the original file from storage
+        const storageResult = await storageGet(sheet.originalFileKey, 300);
+        const fileBuffer = await fs.readFile(storageResult.filePath);
+
+        // Reset to processing state
+        await updateSheetMusic(input.id, {
+          status: "processing",
+          errorMessage: null,
+          musicxmlKey: null,
+          analysisResult: null,
+          voiceAssignments: null,
+          midiFileKeys: null,
+        });
+
+        // Re-run async pipeline
+        processSheetMusicAsync(input.id, fileBuffer, sheet.fileType).catch(async err => {
+          console.error(`Failed to retry processing sheet music ${input.id}:`, err);
+          try {
+            await updateSheetMusic(input.id, {
+              status: "error",
+              errorMessage: err.message,
+            });
+          } catch (updateErr) {
+            console.error(`Failed to update error status for sheet music ${input.id}:`, updateErr);
+          }
+        });
+
+        return { success: true };
+      }),
   }),
 });
 
@@ -342,6 +405,10 @@ async function processSheetMusicAsync(
     // Fail fast if the Python service is unreachable
     await checkPythonServiceHealth();
 
+    await updateSheetMusic(sheetId, {
+      errorMessage: fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…",
+    });
+
     // Call Python service
     const formData = new FormData();
     formData.append('file', fileBuffer, {
@@ -374,6 +441,8 @@ async function processSheetMusicAsync(
       throw new Error("Processing failed");
     }
 
+    await updateSheetMusic(sheetId, { errorMessage: "Storing score…" });
+
     // Upload MusicXML to local storage
     const sheet = await getSheetMusic(sheetId);
     if (!sheet) throw new Error("Sheet not found");
@@ -392,12 +461,13 @@ async function processSheetMusicAsync(
       musicxmlKey,
       analysisResult: result.analysis,
       voiceAssignments,
+      errorMessage: "Generating MIDI files…",
     });
 
     // Generate MIDI files, then set status to "ready"
     await enqueueMidiRegeneration(sheet.userId, sheetId, musicxmlKey, voiceAssignments);
 
-    await updateSheetMusic(sheetId, { status: "ready" });
+    await updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
 
   } catch (error) {
     console.error("Processing error:", error);

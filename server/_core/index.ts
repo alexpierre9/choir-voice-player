@@ -9,6 +9,8 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
+import { markStaleProcessingSheets } from "../db";
+import { validateEnv } from "./env";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -30,6 +32,8 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  validateEnv();
+
   const app = express();
   const server = createServer(app);
 
@@ -105,6 +109,23 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // On startup: clean up any sheets that were left in "processing" state
+  // (e.g. due to a crash during a previous run).
+  markStaleProcessingSheets().then(count => {
+    if (count > 0) {
+      console.log(`[Startup] Marked ${count} stale processing sheet(s) as error.`);
+    }
+  }).catch(() => {});
+
+  // Periodic sweep every 5 minutes
+  setInterval(() => {
+    markStaleProcessingSheets().then(count => {
+      if (count > 0) {
+        console.log(`[Stale check] Marked ${count} sheet(s) as error (timed out).`);
+      }
+    }).catch(() => {});
+  }, 5 * 60 * 1000).unref(); // .unref() so it doesn't prevent clean process exit
 }
 
 startServer().catch(console.error);

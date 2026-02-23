@@ -1,15 +1,18 @@
+import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import Header from "@/components/Header";
 import { APP_TITLE } from "@/const";
-import { Music, Upload, Users, Volume2 } from "lucide-react";
+import { Music, Upload, Users, Volume2, Search } from "lucide-react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 
 export default function Home() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const [search, setSearch] = useState("");
 
   // Only fetch the list once we know the user is authenticated — avoids an
   // UNAUTHORIZED error (and the resulting redirect-to-login) for visitors
@@ -17,6 +20,16 @@ export default function Home() {
   const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
     enabled: !!user,
   });
+
+  const filteredSheets = userSheets
+    ? search.trim()
+      ? userSheets.filter(
+          (s) =>
+            s.title.toLowerCase().includes(search.toLowerCase()) ||
+            s.originalFilename.toLowerCase().includes(search.toLowerCase())
+        )
+      : userSheets
+    : undefined;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
@@ -79,19 +92,33 @@ export default function Home() {
           </Card>
         </div>
 
-        {/* Recent Uploads */}
+        {/* Sheet Music Library */}
+        {user && (
         <div>
-          <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
-            Your Recent Uploads
-          </h3>
+          <div className="flex items-center justify-between mb-4 gap-4">
+            <h3 className="text-2xl font-bold text-gray-900 dark:text-white whitespace-nowrap">
+              Your Sheet Music
+            </h3>
+            {userSheets && userSheets.length > 0 && (
+              <div className="relative max-w-xs w-full">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  placeholder="Search…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+            )}
+          </div>
 
           {sheetsError ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">
               Could not load your uploads. Please refresh the page.
             </p>
-          ) : userSheets && userSheets.length > 0 ? (
+          ) : filteredSheets && filteredSheets.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {userSheets.slice(0, 6).map((sheet) => (
+              {filteredSheets.map((sheet) => (
                 <Card
                   key={sheet.id}
                   className="p-4 hover:shadow-lg transition-shadow cursor-pointer dark:bg-gray-800 dark:border-gray-700"
@@ -126,6 +153,10 @@ export default function Home() {
                 </Card>
               ))}
             </div>
+          ) : search.trim() && userSheets && userSheets.length > 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400 py-4">
+              No results for &ldquo;{search}&rdquo;.
+            </p>
           ) : (
             <Card className="p-12 text-center dark:bg-gray-800 dark:border-gray-700">
               <div className="mx-auto max-w-md">
@@ -146,6 +177,7 @@ export default function Home() {
             </Card>
           )}
         </div>
+        )}
 
         {/* How It Works */}
         <div className="mt-16">

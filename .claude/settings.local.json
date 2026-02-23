@@ -15,7 +15,9 @@
       "Bash(xargs:*)",
       "Bash(grep:*)",
       "Bash(python3:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

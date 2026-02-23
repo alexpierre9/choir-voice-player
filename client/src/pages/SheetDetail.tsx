@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import Header from "@/components/Header";
 import { Label } from "@/components/ui/label";
 import {
@@ -16,6 +17,7 @@ import { Loader2, ArrowLeft, Music } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { getVoiceColors } from "@/lib/voiceColors";
 
 const VOICE_OPTIONS = [
   { value: "soprano", label: "Soprano" },
@@ -50,6 +52,45 @@ export default function SheetDetail() {
       gcTime: 300000, // Keep unused data for 5 minutes
     }
   );
+
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  const renameMutation = trpc.sheetMusic.rename.useMutation({
+    onSuccess: () => {
+      utils.sheetMusic.get.invalidate({ id: sheetId });
+      setEditingTitle(false);
+    },
+    onError: (error) => {
+      toast.error(`Failed to rename: ${error.message}`);
+    },
+  });
+
+  const startEditingTitle = () => {
+    setTitleDraft(sheet?.title ?? "");
+    setEditingTitle(true);
+    setTimeout(() => titleInputRef.current?.select(), 0);
+  };
+
+  const commitTitleEdit = () => {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === sheet?.title) {
+      setEditingTitle(false);
+      return;
+    }
+    renameMutation.mutate({ id: sheetId, title: trimmed });
+  };
+
+  const retryMutation = trpc.sheetMusic.retry.useMutation({
+    onSuccess: () => {
+      toast.success("Retrying processing…");
+      utils.sheetMusic.get.invalidate({ id: sheetId });
+    },
+    onError: (error) => {
+      toast.error(`Retry failed: ${error.message}`);
+    },
+  });
 
   const updateVoicesMutation = trpc.sheetMusic.updateVoiceAssignments.useMutation({
     onSuccess: () => {
@@ -141,6 +182,17 @@ export default function SheetDetail() {
     });
   };
 
+  const handleResetToAutoDetected = () => {
+    const parts = (sheet?.analysisResult as any)?.parts;
+    if (!parts) return;
+    const autoAssignments: Record<string, string> = {};
+    for (const part of parts) {
+      autoAssignments[part.index.toString()] = part.detected_voice;
+    }
+    setVoiceAssignments(autoAssignments);
+    setHasChanges(true);
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -174,7 +226,27 @@ export default function SheetDetail() {
             Back
           </Button>
           <div className="flex-1">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">{sheet.title}</h1>
+            {editingTitle ? (
+              <Input
+                ref={titleInputRef}
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={commitTitleEdit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitTitleEdit();
+                  if (e.key === "Escape") setEditingTitle(false);
+                }}
+                className="text-2xl font-bold h-auto py-0 border-0 border-b-2 rounded-none focus-visible:ring-0 focus-visible:border-blue-500 bg-transparent"
+              />
+            ) : (
+              <h1
+                className="text-3xl font-bold text-gray-900 dark:text-white cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                onClick={startEditingTitle}
+                title="Click to rename"
+              >
+                {sheet.title}
+              </h1>
+            )}
             <p className="text-gray-600 dark:text-gray-300">{sheet.originalFilename}</p>
           </div>
         </div>
@@ -185,7 +257,9 @@ export default function SheetDetail() {
             <div className="flex items-center gap-3">
               <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
               <div>
-                <p className="font-medium">Processing your sheet music...</p>
+                <p className="font-medium">
+                  {sheet.errorMessage ?? "Processing your sheet music…"}
+                </p>
                 <p className="text-sm text-gray-600">
                   This may take a few minutes. The page will update automatically.
                 </p>
@@ -203,11 +277,15 @@ export default function SheetDetail() {
                 <p className="text-sm text-red-700">{sheet.errorMessage || "An unknown error occurred during processing."}</p>
               </div>
               <div className="flex gap-2">
-                <Button onClick={() => setLocation("/")}>
-                  Go Back
+                <Button
+                  onClick={() => retryMutation.mutate({ id: sheetId })}
+                  disabled={retryMutation.isPending}
+                >
+                  {retryMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Retry
                 </Button>
-                <Button variant="outline" onClick={() => window.location.reload()}>
-                  Refresh Page
+                <Button variant="outline" onClick={() => setLocation("/")}>
+                  Go Back
                 </Button>
               </div>
             </div>
@@ -219,23 +297,33 @@ export default function SheetDetail() {
           <>
             <Card className="p-6">
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <h2 className="text-xl font-semibold">Voice Assignments</h2>
-                  {hasChanges && (
+                  <div className="flex gap-2">
                     <Button
-                      onClick={handleSaveChanges}
+                      variant="outline"
+                      size="sm"
+                      onClick={handleResetToAutoDetected}
                       disabled={updateVoicesMutation.isPending}
                     >
-                      {updateVoicesMutation.isPending ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Saving...
-                        </>
-                      ) : (
-                        "Save Changes"
-                      )}
+                      Reset to auto-detected
                     </Button>
-                  )}
+                    {hasChanges && (
+                      <Button
+                        onClick={handleSaveChanges}
+                        disabled={updateVoicesMutation.isPending}
+                      >
+                        {updateVoicesMutation.isPending ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          "Save Changes"
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 <p className="text-sm text-gray-600">
@@ -244,10 +332,13 @@ export default function SheetDetail() {
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {analysis.parts.map((part: any) => (
+                  {analysis.parts.map((part: any) => {
+                    const assignedVoice = voiceAssignments[part.index.toString()] ?? part.detected_voice;
+                    const colors = getVoiceColors(assignedVoice);
+                    return (
                     <div
                       key={part.index}
-                      className="p-4 border rounded-lg space-y-3"
+                      className={`p-4 border-2 rounded-lg space-y-3 ${colors.border}`}
                     >
                       <div className="flex items-start justify-between">
                         <div>
@@ -281,10 +372,11 @@ export default function SheetDetail() {
                       </div>
 
                       <div className="text-xs text-gray-500">
-                        Auto-detected: {part.detected_voice}
+                        Auto-detected: <span className={`px-1 rounded ${colors.badge}`}>{part.detected_voice}</span>
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               </div>
             </Card>
