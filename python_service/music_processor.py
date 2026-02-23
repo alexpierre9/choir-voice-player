@@ -5,17 +5,16 @@ Handles OMR, MusicXML parsing, voice detection, and MIDI generation
 
 import os
 import re
+import shutil
 import tempfile
 import json
 from typing import Dict, List, Optional, Tuple
-from pathlib import Path
 import base64
 
 # OMR and Music Processing
 import google.generativeai as genai
 from music21 import converter, stream, note, chord, clef, instrument, midi as m21midi
 from pdf2image import convert_from_path
-from PIL import Image
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,6 +25,13 @@ if GENAI_API_KEY:
     genai.configure(api_key=GENAI_API_KEY)
 else:
     print("Warning: GEMINI_API_KEY not found. PDF OMR will not work.")
+
+# Maximum number of PDF pages to send to Gemini in one request.
+# Large PDFs risk hitting token limits and timeouts.
+PDF_MAX_PAGES = int(os.environ.get("PDF_MAX_PAGES", "20"))
+
+VALID_VOICE_TYPES = {"soprano", "alto", "tenor", "bass", "other"}
+
 
 class VoiceType:
     SOPRANO = "soprano"
@@ -46,10 +52,10 @@ class MusicProcessor:
             VoiceType.TENOR: self._parse_range(os.environ.get("TENOR_RANGE", "48,69")),     # C3 to A4
             VoiceType.BASS: self._parse_range(os.environ.get("BASS_RANGE", "40,64")),       # E2 to E4
         }
-        
+
         # Overlap threshold for voice detection (default 30%)
         self.OVERLAP_THRESHOLD = float(os.environ.get("VOICE_OVERLAP_THRESHOLD", "0.3"))
-        
+
         self.temp_dir = tempfile.mkdtemp()
 
     def _parse_range(self, range_str):
@@ -60,18 +66,17 @@ class MusicProcessor:
         except (ValueError, IndexError):
             print(f"Warning: Invalid range format '{range_str}', using default (0, 127)")
             return (0, 127)
-    
+
     def cleanup(self):
         """Clean up temporary directory"""
-        import shutil
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
+
     def __enter__(self):
         """Context manager entry"""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *_):
         """Context manager exit — always clean up temp files"""
         self.cleanup()
         return False  # don't suppress exceptions
@@ -79,7 +84,7 @@ class MusicProcessor:
     def __del__(self):
         """Destructor fallback (unreliable — prefer context manager)"""
         self.cleanup()
-    
+
     def process_pdf(self, pdf_path: str) -> str:
         """
         Convert PDF to MusicXML using Gemini Vision OMR
@@ -92,94 +97,98 @@ class MusicProcessor:
             raise ValueError(f"Path is not a file: {pdf_path}")
         if not pdf_path.lower().endswith('.pdf'):
             raise ValueError(f"File must be a PDF: {pdf_path}")
-        
+
         if not os.environ.get("GEMINI_API_KEY"):
             raise RuntimeError("GEMINI_API_KEY is not set")
-        
-        # Convert first page of PDF to image
+
+        # Convert PDF pages to images
         images = convert_from_path(pdf_path, dpi=300)
-        
+
         if not images:
             raise ValueError("Could not extract images from PDF")
-        
-        print(f"Running Gemini Vision OMR on {pdf_path} ({len(images)} page(s))...")
-        
+
+        total_pages = len(images)
+        if total_pages > PDF_MAX_PAGES:
+            print(f"Warning: PDF has {total_pages} pages; only the first {PDF_MAX_PAGES} will be processed.")
+            images = images[:PDF_MAX_PAGES]
+
+        print(f"Running Gemini Vision OMR on {pdf_path} ({len(images)}/{total_pages} page(s))...")
+
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
             model = genai.GenerativeModel(model_name)
-            
+
+            page_note = (
+                f"This score spans {len(images)} page(s) — all pages are provided in order."
+                if total_pages <= PDF_MAX_PAGES else
+                f"The first {len(images)} of {total_pages} pages are provided in order."
+            )
+
             prompt = f"""
             Transcribe this sheet music into valid MusicXML format.
-            This score spans {len(images)} page(s) — all pages are provided in order.
+            {page_note}
             Capture ALL parts, voices, notes, rhythms, and key signatures across every page.
             Return ONLY the raw MusicXML code for the complete score.
             Do not include any markdown formatting (like ```xml).
             Start with <?xml and end with </score-partwise>.
             """
-            
+
             # Send all pages to Gemini in one request
             response = model.generate_content([prompt, *images])
             content = response.text
-            
-            # Clean up potential markdown formatting
-            if "```xml" in content:
-                content = content.split("```xml")[1].split("```")[0].strip()
-            elif "```" in content:
-                 content = content.split("```")[1].strip()
-            
-            # Validate MusicXML structure
+
+            # Strip any markdown code fences Gemini might add despite instructions.
+            # Handle both ```xml ... ``` and ``` ... ``` variants robustly.
+            fence_match = re.search(r"```(?:xml)?\s*([\s\S]*?)```", content)
+            if fence_match:
+                content = fence_match.group(1).strip()
+
+            # Find the XML start even if there is leading prose
             if not content.startswith("<?xml") and not content.startswith("<score-partwise"):
-                 start_idx = content.find("<?xml")
-                 if start_idx == -1:
-                     start_idx = content.find("<score-partwise")
-                 
-                 if start_idx != -1:
-                     content = content[start_idx:]
-                 else:
-                     raise ValueError("Gemini did not return valid XML start tag")
+                start_idx = content.find("<?xml")
+                if start_idx == -1:
+                    start_idx = content.find("<score-partwise")
+                if start_idx != -1:
+                    content = content[start_idx:]
+                else:
+                    raise ValueError("Gemini did not return valid XML start tag")
 
             output_path = os.path.join(self.temp_dir, "score.musicxml")
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            
+
             # Validate with music21
             try:
                 converter.parse(output_path)
             except Exception as e:
-                # If music21 fails, we might still want to return the file for manual fixing,
-                # but for now let's raise
                 raise RuntimeError(f"Generated MusicXML is invalid: {str(e)}")
-                
+
             return output_path
 
         except Exception as e:
             print(f"Gemini OMR failed: {e}")
             raise RuntimeError(f"OMR processing failed: {str(e)}")
-    
+
     def analyze_musicxml(self, musicxml_path: str) -> Dict:
         """
         Analyze MusicXML file and detect voices
         Returns structure with parts and automatic voice detection
         """
         score = converter.parse(musicxml_path)
-        
+
         parts_info = []
-        
+
         for part_idx, part in enumerate(score.parts):
             part_name = part.partName or f"Part {part_idx + 1}"
-            
-            # Detect clef
-            clef_type = self._detect_clef(part)
-            
-            # Analyze pitch range
-            pitch_range = self._analyze_pitch_range(part)
-            
-            # Detect voice type automatically
+
+            # Flatten once and reuse across all analyses for this part
+            flat = part.flatten()
+
+            clef_type = self._detect_clef(flat)
+            pitch_range = self._analyze_pitch_range(flat)
             detected_voice = self._detect_voice_type(part_name, clef_type, pitch_range)
-            
-            # Count notes
-            note_count = len(part.flatten().notes)
-            
+            note_count = len(flat.notes)
+
             parts_info.append({
                 "index": part_idx,
                 "name": part_name,
@@ -188,15 +197,19 @@ class MusicProcessor:
                 "detected_voice": detected_voice,
                 "note_count": note_count,
             })
-        
+
         return {
             "parts": parts_info,
             "total_parts": len(parts_info),
         }
-    
-    def _detect_clef(self, part: stream.Part) -> str:
-        """Detect the primary clef used in a part"""
-        clefs = part.flatten().getElementsByClass(clef.Clef)
+
+    def _detect_clef(self, flat) -> str:
+        """Detect the primary clef used in a part.
+
+        Accepts either a Part or a pre-flattened stream to avoid redundant
+        flatten() calls when the caller has already flattened.
+        """
+        clefs = flat.getElementsByClass(clef.Clef)
         if clefs:
             first_clef = clefs[0]
             if isinstance(first_clef, clef.TrebleClef):
@@ -208,22 +221,26 @@ class MusicProcessor:
             elif isinstance(first_clef, clef.TenorClef):
                 return "tenor"
         return "unknown"
-    
-    def _analyze_pitch_range(self, part: stream.Part) -> Optional[Tuple[int, int]]:
-        """Analyze the pitch range of a part (returns MIDI note numbers)"""
+
+    def _analyze_pitch_range(self, flat) -> Optional[Tuple[int, int]]:
+        """Analyze the pitch range of a part (returns MIDI note numbers).
+
+        Accepts either a Part or a pre-flattened stream to avoid redundant
+        flatten() calls when the caller has already flattened.
+        """
         pitches = []
-        
-        for element in part.flatten().notesAndRests:
+
+        for element in flat.notesAndRests:
             if isinstance(element, note.Note):
                 pitches.append(element.pitch.midi)
             elif isinstance(element, chord.Chord):
                 pitches.extend([p.midi for p in element.pitches])
-        
+
         if not pitches:
             return None
-        
+
         return (min(pitches), max(pitches))
-    
+
     def _detect_voice_type(
         self,
         part_name: str,
@@ -299,70 +316,96 @@ class MusicProcessor:
 
         # If no other criteria match, return OTHER
         return VoiceType.OTHER
-    
+
     def generate_midi_files(
-        self, 
-        musicxml_path: str, 
+        self,
+        musicxml_path: str,
         voice_assignments: Dict[int, str],
         output_dir: str
     ) -> Dict[str, str]:
         """
         Generate separate MIDI files for each voice
-        
+
         Args:
             musicxml_path: Path to MusicXML file
             voice_assignments: Dict mapping part index to voice type
             output_dir: Directory to save MIDI files
-        
+
         Returns:
             Dict mapping voice type to MIDI file path
         """
         score = converter.parse(musicxml_path)
-        
+
         # Group parts by voice type
         voice_parts: Dict[str, List[stream.Part]] = {}
-        
+        # Keep OTHER parts aside for potential fallback re-detection
+        other_parts: List[Tuple[int, stream.Part]] = []
+
         for part_idx, part in enumerate(score.parts):
             # Voice assignments come from JS/JSON where keys are always strings ("0", "1", …).
             # Normalize to string so both str and int keys work.
             str_part_idx = str(part_idx)
             voice_type = voice_assignments.get(str_part_idx, voice_assignments.get(part_idx, VoiceType.OTHER))
-            
-            if voice_type not in voice_parts:
-                voice_parts[voice_type] = []
-            
-            voice_parts[voice_type].append(part)
-        
+
+            if voice_type == VoiceType.OTHER:
+                other_parts.append((part_idx, part))
+            else:
+                if voice_type not in voice_parts:
+                    voice_parts[voice_type] = []
+                voice_parts[voice_type].append(part)
+
+        # If no SATB voices were explicitly assigned, attempt to detect them from
+        # the OTHER parts using pitch/clef analysis so that MIDI generation always
+        # produces usable individual voice files.
+        satb_voices = {VoiceType.SOPRANO, VoiceType.ALTO, VoiceType.TENOR, VoiceType.BASS}
+        if not any(v in voice_parts for v in satb_voices) and other_parts:
+            print("No SATB voice assignments found — falling back to automatic detection for MIDI generation.")
+            for part_idx, part in other_parts:
+                flat = part.flatten()
+                clef_type = self._detect_clef(flat)
+                pitch_range = self._analyze_pitch_range(flat)
+                part_name = part.partName or f"Part {part_idx + 1}"
+                detected = self._detect_voice_type(part_name, clef_type, pitch_range)
+                if detected != VoiceType.OTHER:
+                    if detected not in voice_parts:
+                        voice_parts[detected] = []
+                    voice_parts[detected].append(part)
+
         # Generate MIDI file for each voice
         midi_files = {}
-        
+
         for voice_type, parts in voice_parts.items():
             if voice_type == VoiceType.OTHER:
                 continue
-            
+
             # Create a new score with only this voice's parts
             voice_score = stream.Score()
-            
+
             for part in parts:
                 # Set appropriate instrument
                 inst = self._get_instrument_for_voice(voice_type)
                 part.insert(0, inst)
                 voice_score.append(part)
-            
+
             # Write MIDI file
             midi_filename = f"{voice_type}.mid"
             midi_path = os.path.join(output_dir, midi_filename)
-            
-            voice_score.write('midi', fp=midi_path)
+
+            try:
+                voice_score.write('midi', fp=midi_path)
+            except Exception as e:
+                print(f"Warning: Failed to write MIDI for voice '{voice_type}': {e}")
+                continue
+
             midi_files[voice_type] = midi_path
-        
+
         # Also generate a combined MIDI with all voices
         combined_path = os.path.join(output_dir, "all_voices.mid")
         score.write('midi', fp=combined_path)
         midi_files["all"] = combined_path
-        
+
         return midi_files
-    
+
     def _get_instrument_for_voice(self, voice_type: str) -> instrument.Instrument:
         """Get appropriate instrument for a voice type"""
         # Use vocal instruments for each voice
@@ -376,10 +419,10 @@ class MusicProcessor:
             return instrument.Bass()
         else:
             return instrument.Vocalist()
-    
+
 # FastAPI endpoints
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -429,7 +472,7 @@ async def process_pdf(file: UploadFile = File(...)):
             analysis = processor.analyze_musicxml(musicxml_path)
 
             # Read MusicXML content
-            with open(musicxml_path, 'r') as f:
+            with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
 
             return JSONResponse({
@@ -468,7 +511,7 @@ async def process_musicxml(file: UploadFile = File(...)):
             analysis = processor.analyze_musicxml(musicxml_path)
 
             # Read MusicXML content
-            with open(musicxml_path, 'r') as f:
+            with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
 
             return JSONResponse({
@@ -495,17 +538,30 @@ async def generate_midi(
     if len(musicxml) > 50 * 1024 * 1024:  # 50MB
         raise HTTPException(413, "MusicXML content too large. Maximum size is 50MB")
 
-    # Parse voice assignments
+    # Parse and validate voice assignments
     try:
         assignments = json.loads(voice_assignments)
     except json.JSONDecodeError:
         raise HTTPException(400, "Invalid voice_assignments JSON")
 
+    if not isinstance(assignments, dict):
+        raise HTTPException(400, "voice_assignments must be a JSON object")
+
+    for key, val in assignments.items():
+        if not isinstance(key, str):
+            raise HTTPException(400, f"voice_assignments keys must be strings, got {type(key).__name__!r}")
+        if not isinstance(val, str) or val not in VALID_VOICE_TYPES:
+            raise HTTPException(
+                400,
+                f"Invalid voice type {val!r} for part {key!r}. "
+                f"Must be one of: {', '.join(sorted(VALID_VOICE_TYPES))}"
+            )
+
     try:
         with create_temp_processor() as processor:
             # Save MusicXML to temp file
             musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
-            with open(musicxml_path, 'w') as f:
+            with open(musicxml_path, 'w', encoding="utf-8") as f:
                 f.write(musicxml)
 
             # Create output directory
@@ -552,4 +608,3 @@ async def health_check():
 if __name__ == "__main__":
     port = int(os.environ.get("PYTHON_SERVICE_PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
-

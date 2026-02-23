@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
-import { ENV } from './_core/env';
 
 /** Fields returned for authenticated sessions — never includes passwordHash. */
 const safeUserFields = {
@@ -63,12 +62,9 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values.lastSignedIn = user.lastSignedIn;
       updateSet.lastSignedIn = user.lastSignedIn;
     }
-    if (user.role === undefined) {
-      if (user.id === ENV.ownerId) {
-        user.role = 'admin';
-        values.role = 'admin';
-        updateSet.role = 'admin';
-      }
+    if (user.role !== undefined) {
+      values.role = user.role;
+      updateSet.role = user.role;
     }
 
     if (Object.keys(updateSet).length === 0) {
@@ -96,27 +92,6 @@ export async function getUser(id: string): Promise<SafeUser | undefined> {
     .select(safeUserFields)
     .from(users)
     .where(eq(users.id, id))
-    .limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
-}
-
-/**
- * Get a user by email address.
- * Includes passwordHash so the caller can verify credentials.
- * Never expose the returned value directly to the client.
- */
-export async function getUserByEmail(email: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, email))
     .limit(1);
 
   return result.length > 0 ? result[0] : undefined;

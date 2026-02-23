@@ -6,7 +6,6 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
-import Register from "./pages/Register";
 import Upload from "./pages/Upload";
 import SheetDetail from "./pages/SheetDetail";
 
@@ -15,7 +14,6 @@ function Router() {
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/login"} component={Login} />
-      <Route path={"/register"} component={Register} />
       <Route path={"/upload"} component={Upload} />
       <Route path={"/sheet/:id"} component={SheetDetail} />
       <Route path={"/404"} component={NotFound} />

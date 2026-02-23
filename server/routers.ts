@@ -1,12 +1,13 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { ENV } from "./_core/env";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
-import bcrypt from "bcryptjs";
+import { timingSafeEqual } from "crypto";
 import {
   createSheetMusic,
   updateSheetMusic,
@@ -14,7 +15,6 @@ import {
   getUserSheetMusic,
   deleteSheetMusic,
   upsertUser,
-  getUserByEmail,
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-local";
 import FormData from "form-data";
@@ -34,80 +34,40 @@ export const appRouter = router({
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
 
-    register: publicProcedure
-      .input(
-        z.object({
-          name: z.string().min(1, "Name is required").max(100),
-          email: z.string().email("Invalid email address"),
-          password: z
-            .string()
-            .min(8, "Password must be at least 8 characters")
-            .max(100),
-        })
-      )
+    login: publicProcedure
+      .input(z.object({ passphrase: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {
-        // Reject if email is already taken
-        const existing = await getUserByEmail(input.email);
-        if (existing) {
+        const expected = ENV.authPassphrase;
+        if (!expected) {
           throw new TRPCError({
-            code: "CONFLICT",
-            message: "An account with this email already exists.",
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Server authentication is not configured.",
           });
         }
 
-        const passwordHash = await bcrypt.hash(input.password, 12);
-        const userId = nanoid();
+        // Timing-safe comparison to prevent side-channel leaks.
+        const a = Buffer.from(input.passphrase);
+        const b = Buffer.from(expected);
+        const valid = a.length === b.length && timingSafeEqual(a, b);
 
+        if (!valid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid passphrase.",
+          });
+        }
+
+        // Ensure a single "owner" user row exists for foreign-key integrity.
+        const OWNER_ID = "owner";
         await upsertUser({
-          id: userId,
-          name: input.name,
-          email: input.email,
-          passwordHash,
-          loginMethod: "email",
+          id: OWNER_ID,
+          name: "Owner",
+          loginMethod: "passphrase",
           lastSignedIn: new Date(),
         });
 
-        const sessionToken = await sdk.createSessionToken(userId, {
-          name: input.name,
-          expiresInMs: ONE_YEAR_MS,
-        });
-
-        const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, sessionToken, {
-          ...cookieOptions,
-          maxAge: ONE_YEAR_MS,
-        });
-
-        return { success: true } as const;
-      }),
-
-    login: publicProcedure
-      .input(
-        z.object({
-          email: z.string().email(),
-          password: z.string(),
-        })
-      )
-      .mutation(async ({ ctx, input }) => {
-        const user = await getUserByEmail(input.email);
-
-        // Always run bcrypt.compare to prevent timing attacks that reveal
-        // whether a given email address has an account.
-        const DUMMY_HASH = "$2b$12$invalidhashfortimingprotectiononly00000000000000000";
-        const hashToCheck = user?.passwordHash ?? DUMMY_HASH;
-        const valid = await bcrypt.compare(input.password, hashToCheck);
-
-        if (!user || !user.passwordHash || !valid) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: "Invalid email or password.",
-          });
-        }
-
-        await upsertUser({ id: user.id, lastSignedIn: new Date() });
-
-        const sessionToken = await sdk.createSessionToken(user.id, {
-          name: user.name ?? "",
+        const sessionToken = await sdk.createSessionToken(OWNER_ID, {
+          name: "Owner",
           expiresInMs: ONE_YEAR_MS,
         });
 
@@ -277,7 +237,7 @@ export const appRouter = router({
         }
 
         const midiKeys = sheet.midiFileKeys as Record<string, string>;
-        const midiKey = midiKeys[input.voice];
+        const midiKey = midiKeys[input.voice] ?? midiKeys["all"];
 
         if (!midiKey) {
           throw new Error(`MIDI file for voice ${input.voice} not found`);

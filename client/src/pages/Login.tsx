@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLocation } from "wouter";
+import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,8 +10,7 @@ import { APP_TITLE } from "@/const";
 
 export default function Login() {
   const [, navigate] = useLocation();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   // Read optional post-login redirect from ?redirect=...
@@ -31,7 +30,7 @@ export default function Login() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    login({ email, password });
+    login({ passphrase });
   };
 
   return (
@@ -46,15 +45,15 @@ export default function Login() {
             </span>
           </div>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Sign in to your account
+            Enter your passphrase to continue
           </p>
         </div>
 
         <Card>
           <form onSubmit={handleSubmit}>
             <CardHeader className="pb-4">
-              <CardTitle className="text-lg">Welcome back</CardTitle>
-              <CardDescription>Enter your email and password to continue.</CardDescription>
+              <CardTitle className="text-lg">Welcome</CardTitle>
+              <CardDescription>Enter the passphrase to access the app.</CardDescription>
             </CardHeader>
 
             <CardContent className="space-y-4">
@@ -65,34 +64,21 @@ export default function Login() {
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="passphrase">Passphrase</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  disabled={isPending}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
+                  id="passphrase"
                   type="password"
                   autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  autoFocus
+                  value={passphrase}
+                  onChange={(e) => setPassphrase(e.target.value)}
                   required
                   disabled={isPending}
                 />
               </div>
             </CardContent>
 
-            <CardFooter className="flex-col gap-3">
+            <CardFooter>
               <Button type="submit" className="w-full" disabled={isPending}>
                 {isPending ? (
                   <>
@@ -103,16 +89,6 @@ export default function Login() {
                   "Sign in"
                 )}
               </Button>
-
-              <p className="text-sm text-center text-gray-500 dark:text-gray-400">
-                Don't have an account?{" "}
-                <Link
-                  href={`/register${redirectTo !== "/" ? `?redirect=${encodeURIComponent(redirectTo)}` : ""}`}
-                  className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                >
-                  Create one
-                </Link>
-              </p>
             </CardFooter>
           </form>
         </Card>
