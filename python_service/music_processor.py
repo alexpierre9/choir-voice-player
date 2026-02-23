@@ -9,13 +9,15 @@ import shutil
 import tempfile
 import json
 from typing import Dict, List, Optional, Tuple
+import asyncio
 import base64
+import copy
 import io
 
 # OMR and Music Processing
 from google import genai
 from google.genai import types as genai_types
-from music21 import converter, stream, note, chord, clef, instrument, midi as m21midi
+from music21 import converter, stream, note, chord, clef, instrument
 from pdf2image import convert_from_path
 from dotenv import load_dotenv
 
@@ -118,7 +120,7 @@ class MusicProcessor:
         print(f"Running Gemini Vision OMR on {pdf_path} ({len(images)}/{total_pages} page(s))...")
 
         try:
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
             page_note = (
                 f"This score spans {len(images)} page(s) — all pages are provided in order."
@@ -126,14 +128,16 @@ class MusicProcessor:
                 f"The first {len(images)} of {total_pages} pages are provided in order."
             )
 
-            prompt = f"""
-            Transcribe this sheet music into valid MusicXML format.
-            {page_note}
-            Capture ALL parts, voices, notes, rhythms, and key signatures across every page.
-            Return ONLY the raw MusicXML code for the complete score.
-            Do not include any markdown formatting (like ```xml).
-            Start with <?xml and end with </score-partwise>.
-            """
+            prompt = f"""Transcribe this SATB choir sheet music into valid MusicXML 3.1 (score-partwise).
+{page_note}
+
+Rules:
+- Produce FOUR separate <part> elements with part names: Soprano, Alto, Tenor, Bass.
+- If Soprano and Alto share one treble-clef staff, split them into two distinct parts.
+- If Tenor and Bass share one bass-clef staff, split them into two distinct parts.
+- Preserve every note, rest, rhythm, tie, slur, dynamic marking, tempo indication, lyric, key signature, and time signature across ALL pages, in order.
+- Return ONLY the raw MusicXML. No markdown fences, no prose, no explanations.
+- The response MUST start with <?xml and end with </score-partwise>."""
 
             # Convert PIL images to JPEG bytes for the new SDK
             image_parts = []
@@ -396,10 +400,9 @@ class MusicProcessor:
             voice_score = stream.Score()
 
             for part in parts:
-                # Set appropriate instrument
-                inst = self._get_instrument_for_voice(voice_type)
-                part.insert(0, inst)
-                voice_score.append(part)
+                part_copy = copy.deepcopy(part)
+                part_copy.insert(0, self._get_instrument_for_voice(voice_type))
+                voice_score.append(part_copy)
 
             # Write MIDI file
             midi_filename = f"{voice_type}.mid"
@@ -463,38 +466,29 @@ def create_temp_processor():
 @app.post("/api/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
     """Process PDF sheet music using OMR"""
-    # Validate file type
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(400, "File must be a PDF")
 
-    # Validate file size (50MB limit)
     file_content = await file.read()
-    if len(file_content) > 50 * 1024 * 1024:  # 50MB
+    if len(file_content) > 50 * 1024 * 1024:
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    try:
+    filename = file.filename
+
+    def _run():
         with create_temp_processor() as processor:
-            # Save uploaded file
-            pdf_path = os.path.join(processor.temp_dir, file.filename)
+            pdf_path = os.path.join(processor.temp_dir, filename)
             with open(pdf_path, 'wb') as f:
                 f.write(file_content)
-
-            # Convert PDF to MusicXML
             musicxml_path = processor.process_pdf(pdf_path)
-
-            # Analyze the MusicXML
             analysis = processor.analyze_musicxml(musicxml_path)
-
-            # Read MusicXML content
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
+            return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
-            return JSONResponse({
-                "success": True,
-                "musicxml": musicxml_content,
-                "analysis": analysis,
-            })
-
+    try:
+        result = await asyncio.to_thread(_run)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as e:
@@ -505,35 +499,28 @@ async def process_pdf(file: UploadFile = File(...)):
 @app.post("/api/process-musicxml")
 async def process_musicxml(file: UploadFile = File(...)):
     """Process uploaded MusicXML file"""
-    # Validate file type
     if not (file.filename.lower().endswith('.xml') or file.filename.lower().endswith('.musicxml') or file.filename.lower().endswith('.mxl')):
         raise HTTPException(400, "File must be MusicXML (.xml, .musicxml, or .mxl)")
 
-    # Validate file size (50MB limit)
     file_content = await file.read()
-    if len(file_content) > 50 * 1024 * 1024:  # 50MB
+    if len(file_content) > 50 * 1024 * 1024:
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    try:
+    filename = file.filename
+
+    def _run():
         with create_temp_processor() as processor:
-            # Save uploaded file
-            musicxml_path = os.path.join(processor.temp_dir, file.filename)
+            musicxml_path = os.path.join(processor.temp_dir, filename)
             with open(musicxml_path, 'wb') as f:
                 f.write(file_content)
-
-            # Analyze the MusicXML
             analysis = processor.analyze_musicxml(musicxml_path)
-
-            # Read MusicXML content
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
+            return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
-            return JSONResponse({
-                "success": True,
-                "musicxml": musicxml_content,
-                "analysis": analysis,
-            })
-
+    try:
+        result = await asyncio.to_thread(_run)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as e:
@@ -571,36 +558,23 @@ async def generate_midi(
                 f"Must be one of: {', '.join(sorted(VALID_VOICE_TYPES))}"
             )
 
-    try:
+    def _run():
         with create_temp_processor() as processor:
-            # Save MusicXML to temp file
             musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
             with open(musicxml_path, 'w', encoding="utf-8") as f:
                 f.write(musicxml)
-
-            # Create output directory
             output_dir = os.path.join(processor.temp_dir, "midi_output")
             os.makedirs(output_dir, exist_ok=True)
-
-            # Generate MIDI files
-            midi_files = processor.generate_midi_files(
-                musicxml_path,
-                assignments,
-                output_dir
-            )
-
-            # Read MIDI files and encode as base64
+            midi_files = processor.generate_midi_files(musicxml_path, assignments, output_dir)
             midi_data = {}
             for voice_type, midi_path in midi_files.items():
                 with open(midi_path, 'rb') as f:
-                    midi_content = f.read()
-                    midi_data[voice_type] = base64.b64encode(midi_content).decode('utf-8')
+                    midi_data[voice_type] = base64.b64encode(f.read()).decode('utf-8')
+            return {"success": True, "midi_files": midi_data}
 
-            return JSONResponse({
-                "success": True,
-                "midi_files": midi_data,
-            })
-
+    try:
+        result = await asyncio.to_thread(_run)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as e:
