@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ArrowLeft, Music } from "lucide-react";
+import { Loader2, ArrowLeft, Music, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -43,15 +43,37 @@ export default function SheetDetail() {
     {
       enabled: !!sheetId,
       refetchInterval: (query) => {
-        // Poll every 3 seconds if still processing to reduce backend load
-        return query.state.data?.status === "processing" ? 3000 : false;
+        const status = query.state.data?.status;
+        // Poll every 3 s while processing. On a transient network error React
+        // Query keeps the stale data, so status stays "processing" and polling
+        // continues automatically. Setting retry:false means each poll attempt
+        // fails fast and the next interval fires on schedule instead of waiting
+        // for 2 extra back-off retries.
+        return status === "processing" ? 3000 : false;
       },
-      retry: 2, // Reduce retries to reduce backend load
-      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000), // Faster max delay
-      staleTime: 1000, // Cache data for 1 second to reduce requests
-      gcTime: 300000, // Keep unused data for 5 minutes
+      retry: false,   // let refetchInterval drive retries while processing
+      staleTime: 3000, // match poll interval — avoids redundant background fetches
+      gcTime: 300000,
     }
   );
+
+  // Stall detection: warn the user if the sheet has been "processing" for >5 min
+  // without any DB update (updatedAt hasn't changed).
+  const [isStalled, setIsStalled] = useState(false);
+  useEffect(() => {
+    if (sheet?.status !== "processing") {
+      setIsStalled(false);
+      return;
+    }
+    const check = () => {
+      if (sheet.updatedAt) {
+        setIsStalled(Date.now() - new Date(sheet.updatedAt).getTime() > 5 * 60 * 1000);
+      }
+    };
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => clearInterval(interval);
+  }, [sheet?.status, sheet?.updatedAt]);
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -253,16 +275,27 @@ export default function SheetDetail() {
 
         {/* Processing Status */}
         {sheet.status === "processing" && (
-          <Card className="p-6 bg-blue-50 border-blue-200" aria-live="polite" aria-atomic="true">
-            <div className="flex items-center gap-3">
-              <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-              <div>
+          <Card className={`p-6 border ${isStalled ? "bg-amber-50 border-amber-300" : "bg-blue-50 border-blue-200"}`} aria-live="polite" aria-atomic="true">
+            <div className="flex items-start gap-3">
+              {isStalled
+                ? <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
+                : <Loader2 className="h-5 w-5 animate-spin text-blue-500 mt-0.5 shrink-0" />
+              }
+              <div className="space-y-1">
                 <p className="font-medium">
                   {sheet.errorMessage ?? "Processing your sheet music…"}
                 </p>
-                <p className="text-sm text-gray-600">
-                  This may take a few minutes. The page will update automatically.
-                </p>
+                {isStalled ? (
+                  <p className="text-sm text-amber-700">
+                    This is taking longer than usual. The Python service may have stalled — you can
+                    {" "}<button className="underline font-medium" onClick={() => retryMutation.mutate({ id: sheetId })}>retry</button>
+                    {" "}or wait a little longer.
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-600">
+                    This may take a few minutes. The page will update automatically.
+                  </p>
+                )}
               </div>
             </div>
           </Card>

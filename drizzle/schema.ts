@@ -54,6 +54,7 @@ export const sheetMusic = mysqlTable("sheet_music", {
     userIdIdx: index("idx_user_id").on(table.userId),
     statusIdx: index("idx_status").on(table.status),
     userIdStatusIdx: index("idx_user_id_status").on(table.userId, table.status),
+    userIdCreatedAtIdx: index("idx_user_id_created_at").on(table.userId, table.createdAt),
   };
 });
 

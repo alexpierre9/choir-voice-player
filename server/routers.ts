@@ -371,8 +371,18 @@ export const appRouter = router({
 
 export type AppRouter = typeof appRouter;
 
-// Check that the Python processing service is reachable (fast 2s timeout)
+// Health check cache: success cached for 30 s, failure cached for 5 s so the
+// service is re-checked quickly after it recovers.
+let _healthCache: { ok: boolean; error?: string; expiresAt: number } | null = null;
+
+// Check that the Python processing service is reachable (fast 2s timeout).
+// Results are cached so concurrent uploads don't all hammer the /health endpoint.
 async function checkPythonServiceHealth(): Promise<void> {
+  if (_healthCache && Date.now() < _healthCache.expiresAt) {
+    if (!_healthCache.ok) throw new Error(_healthCache.error);
+    return;
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 2000);
   try {
@@ -380,16 +390,25 @@ async function checkPythonServiceHealth(): Promise<void> {
       signal: controller.signal as any,
     });
     if (!res.ok) {
-      throw new Error(`Python service returned HTTP ${res.status}`);
+      const msg = `Python service returned HTTP ${res.status}`;
+      _healthCache = { ok: false, error: msg, expiresAt: Date.now() + 5_000 };
+      throw new Error(msg);
     }
+    _healthCache = { ok: true, expiresAt: Date.now() + 30_000 };
   } catch (err: any) {
+    let msg: string;
     if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
-      throw new Error('Python processing service is not responding (timeout). Please try again later.');
+      msg = 'Python processing service is not responding (timeout). Please try again later.';
+    } else if (err.code === 'ECONNREFUSED') {
+      msg = 'Python processing service is not running. Please contact the administrator.';
+    } else if (_healthCache?.error === err.message) {
+      // Already cached — just rethrow
+      throw err;
+    } else {
+      msg = `Python processing service health check failed: ${err.message}`;
     }
-    if (err.code === 'ECONNREFUSED') {
-      throw new Error('Python processing service is not running. Please contact the administrator.');
-    }
-    throw new Error(`Python processing service health check failed: ${err.message}`);
+    _healthCache = { ok: false, error: msg, expiresAt: Date.now() + 5_000 };
+    throw new Error(msg);
   } finally {
     clearTimeout(timeoutId);
   }

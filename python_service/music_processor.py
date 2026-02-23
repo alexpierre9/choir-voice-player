@@ -3,6 +3,7 @@ Music Processing Service for Choir Voice Player
 Handles OMR, MusicXML parsing, voice detection, and MIDI generation
 """
 
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,13 @@ import asyncio
 import base64
 import copy
 import io
+
+logging.basicConfig(
+    level=logging.getLevelName(os.environ.get("LOG_LEVEL", "INFO")),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("music_processor")
 
 # OMR and Music Processing
 from google import genai
@@ -25,11 +33,16 @@ load_dotenv()
 
 # Build Gemini client (lazy: only instantiated if the key is present)
 GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Explicit 120 s timeout prevents Gemini calls from hanging on large PDFs.
+_GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", "120"))
 GENAI_CLIENT: "genai.Client | None" = None
 if GENAI_API_KEY:
-    GENAI_CLIENT = genai.Client(api_key=GENAI_API_KEY)
+    GENAI_CLIENT = genai.Client(
+        api_key=GENAI_API_KEY,
+        http_options={"timeout": _GEMINI_TIMEOUT},
+    )
 else:
-    print("Warning: GEMINI_API_KEY not found. PDF OMR will not work.")
+    logger.warning("GEMINI_API_KEY not found. PDF OMR will not work.")
 
 # Maximum number of PDF pages to send to Gemini in one request.
 # Large PDFs risk hitting token limits and timeouts.
@@ -69,7 +82,7 @@ class MusicProcessor:
             parts = range_str.split(',')
             return (int(parts[0]), int(parts[1]))
         except (ValueError, IndexError):
-            print(f"Warning: Invalid range format '{range_str}', using default (0, 127)")
+            logger.warning("Invalid range format %r, using default (0, 127)", range_str)
             return (0, 127)
 
     def cleanup(self):
@@ -114,10 +127,10 @@ class MusicProcessor:
 
         total_pages = len(images)
         if total_pages > PDF_MAX_PAGES:
-            print(f"Warning: PDF has {total_pages} pages; only the first {PDF_MAX_PAGES} will be processed.")
+            logger.warning("PDF has %d pages; only the first %d will be processed.", total_pages, PDF_MAX_PAGES)
             images = images[:PDF_MAX_PAGES]
 
-        print(f"Running Gemini Vision OMR on {pdf_path} ({len(images)}/{total_pages} page(s))...")
+        logger.info("Running Gemini Vision OMR on %s (%d/%d page(s))", pdf_path, len(images), total_pages)
 
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
@@ -184,7 +197,7 @@ Rules:
             return output_path
 
         except Exception as e:
-            print(f"Gemini OMR failed: {e}")
+            logger.error("Gemini OMR failed: %s", e)
             raise RuntimeError(f"OMR processing failed: {str(e)}")
 
     def analyze_musicxml(self, musicxml_path: str) -> Dict:
@@ -377,7 +390,7 @@ Rules:
         # produces usable individual voice files.
         satb_voices = {VoiceType.SOPRANO, VoiceType.ALTO, VoiceType.TENOR, VoiceType.BASS}
         if not any(v in voice_parts for v in satb_voices) and other_parts:
-            print("No SATB voice assignments found — falling back to automatic detection for MIDI generation.")
+            logger.info("No SATB voice assignments found — falling back to automatic detection for MIDI generation.")
             for part_idx, part in other_parts:
                 flat = part.flatten()
                 clef_type = self._detect_clef(flat)
@@ -411,7 +424,7 @@ Rules:
             try:
                 voice_score.write('midi', fp=midi_path)
             except Exception as e:
-                print(f"Warning: Failed to write MIDI for voice '{voice_type}': {e}")
+                logger.warning("Failed to write MIDI for voice %r: %s", voice_type, e)
                 continue
 
             midi_files[voice_type] = midi_path
@@ -492,7 +505,7 @@ async def process_pdf(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error processing PDF: {str(e)}")
+        logger.error("Error processing PDF: %s", e)
         raise HTTPException(500, "Processing failed. Please try again later.")
 
 
@@ -524,7 +537,7 @@ async def process_musicxml(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error processing MusicXML: {str(e)}")
+        logger.error("Error processing MusicXML: %s", e)
         raise HTTPException(500, "Analysis failed. Please try again later.")
 
 
@@ -578,7 +591,7 @@ async def generate_midi(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error generating MIDI: {str(e)}")
+        logger.error("Error generating MIDI: %s", e)
         raise HTTPException(500, "MIDI generation failed. Please try again later.")
 
 

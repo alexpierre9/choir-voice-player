@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 
@@ -139,7 +139,11 @@ export async function getUserSheetMusic(userId: string): Promise<SheetMusic[]> {
     throw new Error("Database not available");
   }
 
-  return await db.select().from(sheetMusic).where(eq(sheetMusic.userId, userId));
+  return await db
+    .select()
+    .from(sheetMusic)
+    .where(eq(sheetMusic.userId, userId))
+    .orderBy(desc(sheetMusic.createdAt));
 }
 
 export async function deleteSheetMusic(id: string): Promise<void> {
