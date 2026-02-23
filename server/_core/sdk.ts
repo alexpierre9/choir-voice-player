@@ -3,7 +3,7 @@ import { ForbiddenError } from "@shared/_core/errors";
 import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
-import type { SafeUser } from "../../drizzle/schema";
+import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { ENV } from "./env";
 
@@ -69,11 +69,9 @@ class SDKServer {
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      // `appId` may be an empty string when VITE_APP_ID is not configured
-      // (email+password deployments often skip this env var), so we only
-      // require that it is *a* string rather than a non-empty one.
-      // `name` may also be empty for accounts with no display name set.
-      if (!isNonEmptyString(openId) || typeof appId !== "string" || typeof name !== "string") {
+      // `name` may be an empty string for Google accounts without a display
+      // name, so only require that it is a string — not a non-empty one.
+      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || typeof name !== "string") {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
@@ -85,7 +83,7 @@ class SDKServer {
     }
   }
 
-  async authenticateRequest(req: Request): Promise<SafeUser> {
+  async authenticateRequest(req: Request): Promise<User> {
     const cookies = this.parseCookies(req.headers.cookie);
     const sessionCookie = cookies.get(COOKIE_NAME);
     const session = await this.verifySession(sessionCookie);

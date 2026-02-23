@@ -26,7 +26,7 @@ const VOICE_OPTIONS = [
 ];
 
 export default function SheetDetail() {
-  const { isLoading: authLoading } = useAuth({ redirectOnUnauthenticated: true });
+  const { loading: authLoading } = useAuth({ redirectOnUnauthenticated: true });
   const [, params] = useRoute("/sheet/:id");
   const [, setLocation] = useLocation();
   const sheetId = params?.id || "";

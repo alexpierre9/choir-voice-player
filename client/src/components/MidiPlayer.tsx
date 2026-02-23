@@ -30,10 +30,6 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
   const midiDataRef = useRef<Map<string, Midi>>(new Map());
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  // Track whether we're resuming from a pause (true) vs starting fresh (false).
-  // When resuming, the Transport's position and the already-scheduled Part events
-  // are still intact — we must NOT cancel/reset them or playback restarts from 0.
-  const isPausedRef = useRef(false);
 
   // Voice labels mapping
   const voiceLabels: Record<string, string> = {
@@ -180,22 +176,16 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const startPlayback = async () => {
     await Tone.start();
 
-    if (!isPausedRef.current) {
-      // Fresh start (or after Stop): cancel any previously scheduled events and
-      // reset the transport position so playback begins at the start.
-      // This prevents doubled notes if the user plays → stops → plays again.
-      Tone.getTransport().cancel(0);
-      Tone.getTransport().seconds = 0;
+    // Cancel previously scheduled events and re-schedule parts from the beginning.
+    // This prevents doubled notes if the user plays → stops → plays again.
+    Tone.getTransport().cancel(0);
+    Tone.getTransport().seconds = 0;
 
-      // (Re-)schedule all parts from beat 0
-      partsRef.current.forEach(part => {
-        part.start(0);
-      });
-    }
-    // If isPausedRef.current === true, the Transport position and scheduled Part
-    // events were preserved by pause() — just call start() to resume in place.
+    // Start all parts from beat 0
+    partsRef.current.forEach(part => {
+      part.start(0);
+    });
 
-    isPausedRef.current = false;
     Tone.getTransport().start();
     setIsPlaying(true);
 
@@ -212,7 +202,6 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   const pausePlayback = () => {
     Tone.getTransport().pause();
-    isPausedRef.current = true;
     setIsPlaying(false);
 
     if (progressIntervalRef.current) {
@@ -224,7 +213,6 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const stopPlayback = () => {
     Tone.getTransport().stop();
     Tone.getTransport().seconds = 0; // Reset position so replay starts from beginning
-    isPausedRef.current = false; // Next play should be a fresh start, not a resume
     setIsPlaying(false);
     setProgress(0);
 

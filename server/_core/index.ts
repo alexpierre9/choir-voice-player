@@ -4,7 +4,7 @@ import { createServer } from "http";
 import net from "net";
 import rateLimit from "express-rate-limit";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-// import { registerOAuthRoutes } from "./oauth"; // disabled: using email+password auth
+import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
@@ -74,8 +74,8 @@ async function startServer() {
   // Apply stricter rate limiting to upload endpoint
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
 
-  // OAuth disabled: using email+password auth instead
-  // registerOAuthRoutes(app);
+  // OAuth callback under /api/oauth/callback
+  registerOAuthRoutes(app);
 
   // Static file serving for uploaded files (MIDI, PDFs, etc.)
   app.use("/files", createFileServerHandler());

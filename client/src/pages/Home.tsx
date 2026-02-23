@@ -11,12 +11,7 @@ export default function Home() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
 
-  // Only fetch the list once we know the user is authenticated — avoids an
-  // UNAUTHORIZED error (and the resulting redirect-to-login) for visitors
-  // who land on the home page without a session.
-  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
-    enabled: !!user,
-  });
+  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">

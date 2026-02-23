@@ -23,7 +23,7 @@ export function useAuth(options?: { redirectOnUnauthenticated?: boolean }) {
   });
 
   // When a protected page is accessed without a session, redirect to the
-  // Google login flow and pass the current path so the user lands back here
+  // login page and pass the current path so the user lands back here
   // after they authenticate.
   useEffect(() => {
     if (!isLoading && !user && options?.redirectOnUnauthenticated) {
