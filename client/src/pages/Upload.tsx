@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { Progress } from "@/components/ui/progress";
 
 export default function Upload() {
   // Redirect to /login (with return path) if the user is not authenticated.
@@ -18,6 +19,8 @@ export default function Upload() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "reading" | "uploading">("idle");
+  const [readProgress, setReadProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadMutation = trpc.sheetMusic.upload.useMutation({
@@ -28,6 +31,7 @@ export default function Upload() {
     onError: (error) => {
       toast.error(`Upload failed: ${error.message}`);
       setIsUploading(false);
+      setUploadPhase("idle");
     },
   });
 
@@ -50,25 +54,40 @@ export default function Upload() {
     }
 
     setIsUploading(true);
+    setUploadPhase("reading");
+    setReadProgress(0);
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64Data = e.target?.result as string;
-      const base64Content = base64Data.split(",")[1];
-      const fileType = selectedFile.name.toLowerCase().endsWith(".pdf") ? "pdf" : "musicxml";
-
-      await uploadMutation.mutateAsync({
-        filename: selectedFile.name,
-        fileType,
-        fileData: base64Content,
-        title: title || selectedFile.name,
-      });
-    };
-    reader.onerror = () => {
-      toast.error("Failed to read file");
+    const base64Content = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onprogress = (e) => {
+        if (e.lengthComputable) {
+          setReadProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      reader.onload = (e) => {
+        const base64Data = e.target?.result as string;
+        resolve(base64Data.split(",")[1]);
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(selectedFile);
+    }).catch((err) => {
+      toast.error(err.message);
       setIsUploading(false);
-    };
-    reader.readAsDataURL(selectedFile);
+      setUploadPhase("idle");
+      return null;
+    });
+
+    if (!base64Content) return;
+
+    setUploadPhase("uploading");
+
+    const fileType = selectedFile.name.toLowerCase().endsWith(".pdf") ? "pdf" : "musicxml";
+    await uploadMutation.mutateAsync({
+      filename: selectedFile.name,
+      fileType,
+      fileData: base64Content,
+      title: title || selectedFile.name,
+    });
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -163,6 +182,23 @@ export default function Upload() {
               />
             </div>
 
+            {uploadPhase === "reading" && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-300">
+                  <span>Reading file…</span>
+                  <span>{readProgress}%</span>
+                </div>
+                <Progress value={readProgress} className="h-2" />
+              </div>
+            )}
+
+            {uploadPhase === "uploading" && (
+              <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-300">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                <span>Uploading…</span>
+              </div>
+            )}
+
             <Button
               onClick={handleUpload}
               disabled={!selectedFile || isUploading}
@@ -172,7 +208,7 @@ export default function Upload() {
               {isUploading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Processing...
+                  {uploadPhase === "reading" ? "Reading file…" : "Uploading…"}
                 </>
               ) : (
                 <>

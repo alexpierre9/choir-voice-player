@@ -75,9 +75,9 @@ Ordered by impact. Pick up from any row.
 |---|--------|------|-------|
 | M1 | ✅ Done | **Stale processing timeout** | `markStaleProcessingSheets()` in `server/db.ts`. Runs at startup + every 5 min. Marks any sheet in `"processing"` with `updatedAt` older than 5 min as `"error"`. |
 | M2 | ✅ Done | **Startup env validation** | `validateEnv()` in `server/_core/env.ts` — exits with `[FATAL]` log if `JWT_SECRET`, `AUTH_PASSPHRASE`, or `DATABASE_URL` is missing. Called at the top of `startServer()`. |
-| M3 | ⏳ Pending | **Upload progress indicator** | Base64 upload gives no progress. Use `XMLHttpRequest.onprogress` or switch to `FormData` with native fetch progress. Show upload % before "Processing..." kicks in. |
+| M3 | ✅ Done | **Upload progress indicator** | Two-phase: `FileReader.onprogress` drives a "Reading file… X%" progress bar, then "Uploading…" spinner while the tRPC mutation is in flight. |
 | M4 | ✅ Done | **System dark mode preference** | ThemeContext now checks `window.matchMedia('(prefers-color-scheme: dark)')` when no value is stored in localStorage. |
-| M5 | ⏳ Pending | **Python SDK update** | `google-generativeai==0.3.1` is ~2 years old. Current SDK is `1.x` with different API. Update before Google deprecates old API. |
+| M5 | ✅ Done | **Python SDK update** | `google-generativeai==0.3.1` → `google-genai>=1.0.0`. Uses `genai.Client` + `client.models.generate_content`. PIL images converted to JPEG bytes via `genai_types.Part.from_bytes`. |
 | M6 | ✅ Done | **Sheet title inline editing** | `sheetMusic.rename` tRPC procedure added. Click the title on SheetDetail to edit inline (Enter to save, Escape to cancel). |
 
 ### Lower Impact
@@ -87,7 +87,7 @@ Ordered by impact. Pick up from any row.
 | L1 | ✅ Done | **Playback speed control** | 0.5×/0.75×/1×/1.25×/1.5× buttons. Parts rebuilt with scaled note times on change. |
 | L2 | ✅ Done | **SATB voice color coding** | `client/src/lib/voiceColors.ts` — soprano=pink, alto=purple, tenor=blue, bass=green. Applied in SheetDetail cards and MidiPlayer voice rows. |
 | L3 | ✅ Done | **Error boundary polish** | Friendly message; stack trace hidden behind "Show technical details" collapsible toggle. |
-| L4 | ⏳ Pending | **CI / pre-push type check** | Add a pre-push git hook or GitHub Actions workflow that runs `pnpm check` + `pnpm test`. |
+| L4 | ✅ Done | **CI / pre-push type check** | `.github/workflows/ci.yml` runs `pnpm check` + `pnpm test` on every push and PR to master. |
 | L5 | ✅ Done | **Keyboard accessibility** | Space = play/pause, ArrowLeft/Right = seek ±5s, M = mute first voice. Skipped when focus is in an input. |
 
 ---

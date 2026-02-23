@@ -10,19 +10,22 @@ import tempfile
 import json
 from typing import Dict, List, Optional, Tuple
 import base64
+import io
 
 # OMR and Music Processing
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 from music21 import converter, stream, note, chord, clef, instrument, midi as m21midi
 from pdf2image import convert_from_path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure Gemini
+# Build Gemini client (lazy: only instantiated if the key is present)
 GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GENAI_CLIENT: "genai.Client | None" = None
 if GENAI_API_KEY:
-    genai.configure(api_key=GENAI_API_KEY)
+    GENAI_CLIENT = genai.Client(api_key=GENAI_API_KEY)
 else:
     print("Warning: GEMINI_API_KEY not found. PDF OMR will not work.")
 
@@ -98,7 +101,7 @@ class MusicProcessor:
         if not pdf_path.lower().endswith('.pdf'):
             raise ValueError(f"File must be a PDF: {pdf_path}")
 
-        if not os.environ.get("GEMINI_API_KEY"):
+        if GENAI_CLIENT is None:
             raise RuntimeError("GEMINI_API_KEY is not set")
 
         # Convert PDF pages to images
@@ -116,7 +119,6 @@ class MusicProcessor:
 
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
-            model = genai.GenerativeModel(model_name)
 
             page_note = (
                 f"This score spans {len(images)} page(s) — all pages are provided in order."
@@ -133,8 +135,20 @@ class MusicProcessor:
             Start with <?xml and end with </score-partwise>.
             """
 
+            # Convert PIL images to JPEG bytes for the new SDK
+            image_parts = []
+            for img in images:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG")
+                image_parts.append(
+                    genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
+                )
+
             # Send all pages to Gemini in one request
-            response = model.generate_content([prompt, *images])
+            response = GENAI_CLIENT.models.generate_content(
+                model=model_name,
+                contents=[prompt, *image_parts],
+            )
             content = response.text
 
             # Strip any markdown code fences Gemini might add despite instructions.
