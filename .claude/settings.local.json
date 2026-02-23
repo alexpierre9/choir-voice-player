@@ -17,7 +17,12 @@
       "Bash(python3:*)",
       "Bash(node -e:*)",
       "Bash(find:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(pip --version:*)",
+      "Bash(pip3:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout 5 python:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

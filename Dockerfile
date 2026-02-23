@@ -1,54 +1,41 @@
 # Multi-stage build for the Choir Voice Player
+
+# Stage 1: Build frontend
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app
 
-# Copy package files
 COPY package.json pnpm-lock.yaml ./
-
-# Install pnpm and dependencies
 RUN npm install -g pnpm
 RUN pnpm install
 
-# Copy frontend source
 COPY ./client ./client
 COPY ./shared ./shared
 COPY ./vite.config.ts ./
 COPY ./tsconfig.json ./
 
-# Build the frontend
 RUN pnpm build
 
-# Python service stage
-FROM python:3.11-slim AS python-service
+# Stage 2: Combined Node.js + Python backend
+FROM node:22-slim AS backend
 
 WORKDIR /app
 
-# Install system dependencies required for pdf2image
+# Install Python 3 and system dependencies (poppler-utils for pdf2image)
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python dependencies
-COPY requirements.txt .
-
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+COPY python_service/requirements.txt ./python_service/requirements.txt
+RUN pip3 install --no-cache-dir -r python_service/requirements.txt --break-system-packages
 
-# Copy Python service
-COPY ./python_service ./python_service
-
-# Node.js backend stage
-FROM node:22-alpine AS backend
-
-WORKDIR /app
-
-# Copy package files
+# Install Node dependencies
 COPY package.json pnpm-lock.yaml ./
-
-# Install pnpm and dependencies
 RUN npm install -g pnpm
-RUN pnpm install
+RUN pnpm install --prod
 
 # Copy backend source
 COPY ./server ./server
@@ -57,12 +44,14 @@ COPY ./drizzle ./drizzle
 COPY ./drizzle.config.ts ./
 COPY ./tsconfig.json ./
 
+# Copy Python service
+COPY ./python_service ./python_service
+
 # Copy built frontend assets
 COPY --from=frontend-builder /app/dist ./dist
 
-# Expose ports
 EXPOSE 3000
 EXPOSE 8001
 
-# Start both services
+# Start Node.js server and Python service concurrently
 CMD ["sh", "-c", "node dist/index.js & python3 python_service/music_processor.py && wait"]
