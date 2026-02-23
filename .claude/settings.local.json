@@ -9,7 +9,9 @@
       "Bash(git commit:*)",
       "Bash(ssh:*)",
       "Bash(xxd:*)",
-      "Bash(ssh-keygen:*)"
+      "Bash(ssh-keygen:*)",
+      "Bash(cd /c/Users/pierr/Documents/code/Antigravity/choir-voice-player && rm -rf node_modules/.pnpm/asynckit@0.4.0 node_modules/asynckit && pnpm install 2>&1)",
+      "Bash(cd /c/Users/pierr/Documents/code/Antigravity/choir-voice-player && npx tsc --noEmit 2>&1)"
     ]
   },
   "enableAllProjectMcpServers": true,
