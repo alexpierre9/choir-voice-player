@@ -4,6 +4,7 @@ Handles OMR, MusicXML parsing, voice detection, and MIDI generation
 """
 
 import os
+import re
 import tempfile
 import json
 from typing import Dict, List, Optional, Tuple
@@ -66,8 +67,17 @@ class MusicProcessor:
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
     
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit — always clean up temp files"""
+        self.cleanup()
+        return False  # don't suppress exceptions
+
     def __del__(self):
-        """Destructor to ensure cleanup"""
+        """Destructor fallback (unreliable — prefer context manager)"""
         self.cleanup()
     
     def process_pdf(self, pdf_path: str) -> str:
@@ -225,19 +235,24 @@ class MusicProcessor:
         """
         part_name_lower = part_name.lower().strip()
 
-        # Check part name for keywords (with more comprehensive matching)
-        soprano_keywords = ["soprano", "sop", "s ", "s.", "sopr"]
-        alto_keywords = ["alto", "alt", "a ", "a.", "contr", "counter"]
-        tenor_keywords = ["tenor", "ten", "t ", "t.", "ten."]
-        bass_keywords = ["bass", "bas", "b ", "b.", "bass.", "bari", "baritone", "bar"]
+        # Check part name for keywords using word-boundary regex.
+        # Multi-char keywords use \b to avoid matching inside longer words
+        # (e.g. "alt" won't match "alto" — "alto" is its own keyword).
+        # Single-letter abbreviations (s, a, t, b) only match at the start
+        # of the name followed by '.', a digit, or end-of-string to avoid
+        # false positives like "Piano" matching "a" or "Oboe" matching "b".
+        soprano_patterns = [r'\bsoprano\b', r'\bsop\b', r'\bsopr\b', r'^s(?=[.\d]|$)']
+        alto_patterns = [r'\balto\b', r'\balt\b', r'\bcontr\b', r'\bcounter\b', r'^a(?=[.\d]|$)']
+        tenor_patterns = [r'\btenor\b', r'\bten\b', r'^t(?=[.\d]|$)']
+        bass_patterns = [r'\bbass\b', r'\bbas\b', r'\bbari\b', r'\bbaritone\b', r'\bbar\b', r'^b(?=[.\d]|$)']
 
-        if any(keyword in part_name_lower for keyword in soprano_keywords):
+        if any(re.search(p, part_name_lower) for p in soprano_patterns):
             return VoiceType.SOPRANO
-        if any(keyword in part_name_lower for keyword in alto_keywords):
+        if any(re.search(p, part_name_lower) for p in alto_patterns):
             return VoiceType.ALTO
-        if any(keyword in part_name_lower for keyword in tenor_keywords):
+        if any(re.search(p, part_name_lower) for p in tenor_patterns):
             return VoiceType.TENOR
-        if any(keyword in part_name_lower for keyword in bass_keywords):
+        if any(re.search(p, part_name_lower) for p in bass_patterns):
             return VoiceType.BASS
 
         # If no keyword match, use pitch range primarily
@@ -400,39 +415,34 @@ async def process_pdf(file: UploadFile = File(...)):
     if len(file_content) > 50 * 1024 * 1024:  # 50MB
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    processor = create_temp_processor()
     try:
-        # Save uploaded file
-        pdf_path = os.path.join(processor.temp_dir, file.filename)
-        with open(pdf_path, 'wb') as f:
-            f.write(file_content)
+        with create_temp_processor() as processor:
+            # Save uploaded file
+            pdf_path = os.path.join(processor.temp_dir, file.filename)
+            with open(pdf_path, 'wb') as f:
+                f.write(file_content)
 
-        # Convert PDF to MusicXML
-        musicxml_path = processor.process_pdf(pdf_path)
+            # Convert PDF to MusicXML
+            musicxml_path = processor.process_pdf(pdf_path)
 
-        # Analyze the MusicXML
-        analysis = processor.analyze_musicxml(musicxml_path)
+            # Analyze the MusicXML
+            analysis = processor.analyze_musicxml(musicxml_path)
 
-        # Read MusicXML content
-        with open(musicxml_path, 'r') as f:
-            musicxml_content = f.read()
+            # Read MusicXML content
+            with open(musicxml_path, 'r') as f:
+                musicxml_content = f.read()
 
-        return JSONResponse({
-            "success": True,
-            "musicxml": musicxml_content,
-            "analysis": analysis,
-        })
+            return JSONResponse({
+                "success": True,
+                "musicxml": musicxml_content,
+                "analysis": analysis,
+            })
 
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        # Log the full error for debugging but return a sanitized message to the client
         print(f"Error processing PDF: {str(e)}")
         raise HTTPException(500, "Processing failed. Please try again later.")
-    finally:
-        # Clean up the temporary processor
-        processor.cleanup()
 
 
 @app.post("/api/process-musicxml")
@@ -447,36 +457,31 @@ async def process_musicxml(file: UploadFile = File(...)):
     if len(file_content) > 50 * 1024 * 1024:  # 50MB
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    processor = create_temp_processor()
     try:
-        # Save uploaded file
-        musicxml_path = os.path.join(processor.temp_dir, file.filename)
-        with open(musicxml_path, 'wb') as f:
-            f.write(file_content)
+        with create_temp_processor() as processor:
+            # Save uploaded file
+            musicxml_path = os.path.join(processor.temp_dir, file.filename)
+            with open(musicxml_path, 'wb') as f:
+                f.write(file_content)
 
-        # Analyze the MusicXML
-        analysis = processor.analyze_musicxml(musicxml_path)
+            # Analyze the MusicXML
+            analysis = processor.analyze_musicxml(musicxml_path)
 
-        # Read MusicXML content
-        with open(musicxml_path, 'r') as f:
-            musicxml_content = f.read()
+            # Read MusicXML content
+            with open(musicxml_path, 'r') as f:
+                musicxml_content = f.read()
 
-        return JSONResponse({
-            "success": True,
-            "musicxml": musicxml_content,
-            "analysis": analysis,
-        })
+            return JSONResponse({
+                "success": True,
+                "musicxml": musicxml_content,
+                "analysis": analysis,
+            })
 
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        # Log the full error for debugging but return a sanitized message to the client
         print(f"Error processing MusicXML: {str(e)}")
         raise HTTPException(500, "Analysis failed. Please try again later.")
-    finally:
-        # Clean up the temporary processor
-        processor.cleanup()
 
 
 @app.post("/api/generate-midi")
@@ -496,46 +501,41 @@ async def generate_midi(
     except json.JSONDecodeError:
         raise HTTPException(400, "Invalid voice_assignments JSON")
 
-    processor = create_temp_processor()
     try:
-        # Save MusicXML to temp file
-        musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
-        with open(musicxml_path, 'w') as f:
-            f.write(musicxml)
+        with create_temp_processor() as processor:
+            # Save MusicXML to temp file
+            musicxml_path = os.path.join(processor.temp_dir, "score.musicxml")
+            with open(musicxml_path, 'w') as f:
+                f.write(musicxml)
 
-        # Create output directory
-        output_dir = os.path.join(processor.temp_dir, "midi_output")
-        os.makedirs(output_dir, exist_ok=True)
+            # Create output directory
+            output_dir = os.path.join(processor.temp_dir, "midi_output")
+            os.makedirs(output_dir, exist_ok=True)
 
-        # Generate MIDI files
-        midi_files = processor.generate_midi_files(
-            musicxml_path,
-            assignments,
-            output_dir
-        )
+            # Generate MIDI files
+            midi_files = processor.generate_midi_files(
+                musicxml_path,
+                assignments,
+                output_dir
+            )
 
-        # Read MIDI files and encode as base64
-        midi_data = {}
-        for voice_type, midi_path in midi_files.items():
-            with open(midi_path, 'rb') as f:
-                midi_content = f.read()
-                midi_data[voice_type] = base64.b64encode(midi_content).decode('utf-8')
+            # Read MIDI files and encode as base64
+            midi_data = {}
+            for voice_type, midi_path in midi_files.items():
+                with open(midi_path, 'rb') as f:
+                    midi_content = f.read()
+                    midi_data[voice_type] = base64.b64encode(midi_content).decode('utf-8')
 
-        return JSONResponse({
-            "success": True,
-            "midi_files": midi_data,
-        })
+            return JSONResponse({
+                "success": True,
+                "midi_files": midi_data,
+            })
 
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        # Log the full error for debugging but return a sanitized message to the client
         print(f"Error generating MIDI: {str(e)}")
         raise HTTPException(500, "MIDI generation failed. Please try again later.")
-    finally:
-        # Clean up the temporary processor
-        processor.cleanup()
 
 
 @app.get("/health")

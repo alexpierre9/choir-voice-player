@@ -26,7 +26,7 @@ const VOICE_OPTIONS = [
 ];
 
 export default function SheetDetail() {
-  const { loading: authLoading } = useAuth({ redirectOnUnauthenticated: true });
+  const { isLoading: authLoading } = useAuth({ redirectOnUnauthenticated: true });
   const [, params] = useRoute("/sheet/:id");
   const [, setLocation] = useLocation();
   const sheetId = params?.id || "";
@@ -69,19 +69,19 @@ export default function SheetDetail() {
     }
   }, [sheet]);
 
-  // Load MIDI URLs when sheet is ready
+  // Load MIDI URLs when sheet is ready, and refresh them every 4 minutes
+  // (cloud storage pre-signed URLs expire after 5 min)
   useEffect(() => {
-    // Use a ref to track if a load operation is in progress to prevent race conditions
     let isCancelled = false;
-    
+
     const loadMidiUrls = async () => {
       if (sheet?.status === "ready" && sheet.midiFileKeys && !isCancelled) {
         const keys = sheet.midiFileKeys as Record<string, string>;
         const urls: Record<string, string> = {};
 
-        for (const [voice, _] of Object.entries(keys)) {
-          if (isCancelled) break; // Check if component unmounted
-          
+        for (const [voice] of Object.entries(keys)) {
+          if (isCancelled) break;
+
           try {
             const result = await utils.sheetMusic.getMidiUrl.fetch({
               id: sheetId,
@@ -103,15 +103,19 @@ export default function SheetDetail() {
       }
     };
 
+    let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
     if (sheet?.status === "ready" && sheet.midiFileKeys) {
       loadMidiUrls();
+      // Refresh URLs every 4 minutes to prevent expiry
+      refreshInterval = setInterval(loadMidiUrls, 4 * 60 * 1000);
     }
-    
-    // Cleanup function to prevent state updates on unmounted components
+
     return () => {
       isCancelled = true;
+      if (refreshInterval) clearInterval(refreshInterval);
     };
-  }, [sheet?.status, sheet?.midiFileKeys, sheetId]); // Only re-run when status or midiFileKeys change
+  }, [sheet?.status, sheet?.midiFileKeys, sheetId]);
 
   // Show loading state while checking authentication (must be after all hooks)
   if (authLoading) {

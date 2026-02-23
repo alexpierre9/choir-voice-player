@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Moon, Sun, Music, LogIn, LogOut } from "lucide-react";
+import { Link } from "wouter";
 import { useTheme } from "../contexts/ThemeContext";
 import { APP_TITLE } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -54,15 +55,17 @@ export default function Header() {
                 </Button>
               </div>
             ) : (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => login()}
-                aria-label="Sign in with Google"
-              >
-                <LogIn className="h-4 w-4 mr-1" />
-                Sign in
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/login">
+                    <LogIn className="h-4 w-4 mr-1" />
+                    Sign in
+                  </Link>
+                </Button>
+                <Button variant="default" size="sm" asChild>
+                  <Link href="/register">Get started</Link>
+                </Button>
+              </div>
             )
           )}
         </div>

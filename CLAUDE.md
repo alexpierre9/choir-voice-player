@@ -12,29 +12,62 @@ pnpm start            # Run production server
 pnpm check            # TypeScript type checking (tsc --noEmit)
 pnpm format           # Format code with Prettier
 pnpm test             # Run tests with Vitest
+pnpm test -- path     # Run a single test file
 pnpm db:push          # Generate and apply Drizzle migrations
 ```
 
 ## Architecture Overview
 
-This is a full-stack monorepo for a choir voice separation app: users upload sheet music (PDF or MusicXML), the app extracts SATB voice parts, and plays each voice via MIDI synthesis in the browser.
+Full-stack monorepo for a choir voice separation app: users upload sheet music (PDF or MusicXML), the app extracts SATB voice parts, and plays each voice via MIDI synthesis in the browser.
 
 ### Layers
 
-**Client** (`/client/`) — React 19 + Vite, Tailwind CSS 4, shadcn/ui, Wouter routing, React Query + tRPC hooks, Tone.js for MIDI playback.
+**Client** (`/client/`) — React 19 + Vite 7, Tailwind CSS 4, shadcn/ui, Wouter routing, React Query + tRPC hooks, Tone.js for MIDI playback.
 
-**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with MySQL/TiDB, JWT session cookies, dual storage adapters (cloud or local filesystem), rate limiting.
+**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with MySQL, JWT session cookies (email+password auth), dual storage adapters (cloud or local filesystem), rate limiting.
 
 **Python Service** (`/python_service/`) — FastAPI on port 8001. Handles the music processing pipeline: Gemini Vision for PDF→MusicXML OMR, music21 for MusicXML parsing and voice detection, MIDI file generation per voice part.
 
-**Shared** (`/shared/`) — Types (from Drizzle schema), constants, and error definitions shared between client and server.
+**Shared** (`/shared/`) — Types (re-exported from Drizzle schema), constants (`COOKIE_NAME`, `UNAUTHED_ERR_MSG`), and `HttpError` constructors shared between client and server.
+
+### Server Core (`server/_core/`)
+
+- `index.ts` — Express setup, rate limiting, body parser (100MB limit for base64 files), Vite dev mode integration
+- `trpc.ts` — tRPC init with SuperJSON transformer. Defines `publicProcedure`, `protectedProcedure`, `adminProcedure`
+- `context.ts` — tRPC context factory, authenticates requests via SDK
+- `sdk.ts` — JWT (HS256, jose) session management, bcrypt password hashing (12 rounds, timing-safe login)
+- `env.ts` — Centralized environment variable loading
+- `cookies.ts` — Session cookie config (httpOnly, sameSite varies by HTTPS)
+
+### Authentication
+
+Email+password auth (migrated from Google OAuth). Key patterns:
+- Passwords hashed with bcrypt (12-round salt); login always runs bcrypt.compare even for non-existent accounts (timing-attack protection)
+- Sessions are JWT tokens stored in `app_session_id` cookies (1-year expiry)
+- `SafeUser` type excludes `passwordHash` from all tRPC context/responses
+- Admin role set via `OWNER_OPEN_ID` env var matching a user ID
+
+### API (tRPC)
+
+All client-server communication is through tRPC. The router in `server/routers.ts` exposes:
+- `auth.me`, `auth.register`, `auth.login`, `auth.logout`
+- `sheetMusic.upload`, `.get`, `.list`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`
+
+Protected procedures enforce authentication via `protectedProcedure` middleware. Rate limits: 100 req/15min general, 10 uploads/15min (skipped in dev).
+
+### Client Key Patterns
+
+- tRPC client configured in `client/src/lib/trpc.ts` with SuperJSON and credentials: "include"
+- Auto-redirect to login on `UNAUTHED_ERR_MSG` (error code 10001) via QueryClient's onError
+- `getLoginUrl()` helper preserves post-login redirect via `?redirect=` query param
+- `APP_TITLE` / `APP_LOGO` configurable via `VITE_APP_TITLE` / `VITE_APP_LOGO` env vars
 
 ### File Processing Pipeline
 
 ```
-1. Client uploads file (base64) → tRPC upload procedure
+1. Client uploads file (base64, max 50MB) → tRPC upload procedure
 2. Server stores original file (local FS or Forge cloud), creates DB record (status='processing')
-3. Async calls to Python service:
+3. Async background calls to Python service:
    - POST /api/process-pdf  → Gemini OMR → MusicXML (PDF only)
    - POST /api/process-musicxml → music21 analysis → voice detection
    - POST /api/generate-midi → separate MIDI file per SATB voice
@@ -42,43 +75,40 @@ This is a full-stack monorepo for a choir voice separation app: users upload she
 5. Client polls status; on ready, loads MIDIs via Tone.js for playback
 ```
 
-### API (tRPC)
-
-All client-server communication is through tRPC. The router in `server/routers.ts` exposes:
-- `auth.me`, `auth.logout`
-- `sheetMusic.upload`, `.get`, `.list`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`
-
-Protected procedures enforce authentication via `protectedProcedure` middleware. Rate limits: 100 req/15min general, 10 uploads/15min.
-
 ### Storage
 
 Two adapters implement the same interface:
-- `server/storage.ts` — Manus Forge cloud API (production, requires `BUILT_IN_FORGE_API_URL` / `BUILT_IN_FORGE_API_KEY`)
-- `server/storage-local.ts` — Local filesystem (VPS, files served at `/files/`, configurable via `LOCAL_STORAGE_DIR`)
+- `server/storage.ts` — Forge cloud API (production, requires `BUILT_IN_FORGE_API_URL` / `BUILT_IN_FORGE_API_KEY`)
+- `server/storage-local.ts` — Local filesystem (VPS, files served at `/files/`, configurable via `LOCAL_STORAGE_DIR`). Includes directory traversal protection.
 
 ### Database
 
-Drizzle ORM with MySQL2. Two tables: `users` and `sheet_music`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys.
+Drizzle ORM with MySQL2 (lazy connection). Two tables: `users` and `sheet_music`. Schema in `drizzle/schema.ts`, migrations in `drizzle/`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys.
 
 ### Path Aliases
 
 - `@/*` → `client/src/*`
 - `@shared/*` → `shared/*`
 
+### Testing
+
+Vitest configured for server-side only (`server/**/*.test.ts`, `server/**/*.spec.ts`). Run with `pnpm test`.
+
 ## Key Environment Variables
 
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | MySQL connection string |
-| `JWT_SECRET` | Session cookie signing |
+| `JWT_SECRET` | Session cookie signing key |
 | `GEMINI_API_KEY` | Google AI for PDF OMR |
-| `VITE_APP_ID` | OAuth app ID |
-| `OAUTH_SERVER_URL` | OAuth backend endpoint |
-| `VITE_OAUTH_PORTAL_URL` | OAuth login portal |
+| `OWNER_OPEN_ID` | User ID designated as admin |
 | `BUILT_IN_FORGE_API_URL` | Cloud storage API |
 | `BUILT_IN_FORGE_API_KEY` | Cloud storage API key |
 | `LOCAL_STORAGE_DIR` | Local FS storage path (VPS) |
-| `PYTHON_SERVICE_URL` | Python service URL (default: `http://localhost:8001`) |
+| `PUBLIC_URL_BASE` | Public file serving base (default `/files/`) |
+| `PYTHON_SERVICE_URL` | Python service URL (default `http://localhost:8001`) |
+| `VITE_APP_TITLE` | App display name (default "Choir Voice Player") |
+| `VITE_APP_LOGO` | App logo URL |
 
 ## Deployment
 

@@ -1,15 +1,20 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import bcrypt from "bcryptjs";
 import {
   createSheetMusic,
   updateSheetMusic,
   getSheetMusic,
   getUserSheetMusic,
-  deleteSheetMusic
+  deleteSheetMusic,
+  upsertUser,
+  getUserByEmail,
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-local";
 import FormData from "form-data";
@@ -19,17 +24,106 @@ import fs from "fs/promises";
 // Python service URL
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
 
+// Per-sheet lock to prevent concurrent MIDI generation.
+// Each entry chains promises so only one regeneration runs at a time per sheet.
+const midiGenerationLocks = new Map<string, Promise<void>>();
+
 export const appRouter = router({
   system: systemRouter,
 
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
+
+    register: publicProcedure
+      .input(
+        z.object({
+          name: z.string().min(1, "Name is required").max(100),
+          email: z.string().email("Invalid email address"),
+          password: z
+            .string()
+            .min(8, "Password must be at least 8 characters")
+            .max(100),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        // Reject if email is already taken
+        const existing = await getUserByEmail(input.email);
+        if (existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "An account with this email already exists.",
+          });
+        }
+
+        const passwordHash = await bcrypt.hash(input.password, 12);
+        const userId = nanoid();
+
+        await upsertUser({
+          id: userId,
+          name: input.name,
+          email: input.email,
+          passwordHash,
+          loginMethod: "email",
+          lastSignedIn: new Date(),
+        });
+
+        const sessionToken = await sdk.createSessionToken(userId, {
+          name: input.name,
+          expiresInMs: ONE_YEAR_MS,
+        });
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, sessionToken, {
+          ...cookieOptions,
+          maxAge: ONE_YEAR_MS,
+        });
+
+        return { success: true } as const;
+      }),
+
+    login: publicProcedure
+      .input(
+        z.object({
+          email: z.string().email(),
+          password: z.string(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const user = await getUserByEmail(input.email);
+
+        // Always run bcrypt.compare to prevent timing attacks that reveal
+        // whether a given email address has an account.
+        const DUMMY_HASH = "$2b$12$invalidhashfortimingprotectiononly00000000000000000";
+        const hashToCheck = user?.passwordHash ?? DUMMY_HASH;
+        const valid = await bcrypt.compare(input.password, hashToCheck);
+
+        if (!user || !user.passwordHash || !valid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password.",
+          });
+        }
+
+        await upsertUser({ id: user.id, lastSignedIn: new Date() });
+
+        const sessionToken = await sdk.createSessionToken(user.id, {
+          name: user.name ?? "",
+          expiresInMs: ONE_YEAR_MS,
+        });
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, sessionToken, {
+          ...cookieOptions,
+          maxAge: ONE_YEAR_MS,
+        });
+
+        return { success: true } as const;
+      }),
+
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+      return { success: true } as const;
     }),
   }),
 
@@ -138,16 +232,24 @@ export const appRouter = router({
           throw new Error("Unauthorized");
         }
 
-        // Update voice assignments
+        // Update voice assignments, set status back to processing, clear stale MIDI keys
         await updateSheetMusic(input.id, {
           voiceAssignments: input.voiceAssignments as any,
+          status: "processing",
+          midiFileKeys: null,
         });
 
         // Regenerate MIDI files
         if (sheet.musicxmlKey) {
-          regenerateMidiAsync(sheet.userId, input.id, sheet.musicxmlKey, input.voiceAssignments).catch(err => {
-            console.error(`Failed to regenerate MIDI for ${input.id}:`, err);
-          });
+          enqueueMidiRegeneration(sheet.userId, input.id, sheet.musicxmlKey, input.voiceAssignments)
+            .then(() => updateSheetMusic(input.id, { status: "ready" }))
+            .catch(async (err) => {
+              console.error(`Failed to regenerate MIDI for ${input.id}:`, err);
+              await updateSheetMusic(input.id, {
+                status: "error",
+                errorMessage: err instanceof Error ? err.message : "MIDI regeneration failed",
+              }).catch(() => {});
+            });
         }
 
         return { success: true };
@@ -246,6 +348,30 @@ export const appRouter = router({
 
 export type AppRouter = typeof appRouter;
 
+// Check that the Python processing service is reachable (fast 2s timeout)
+async function checkPythonServiceHealth(): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2000);
+  try {
+    const res = await fetch(`${PYTHON_SERVICE_URL}/health`, {
+      signal: controller.signal as any,
+    });
+    if (!res.ok) {
+      throw new Error(`Python service returned HTTP ${res.status}`);
+    }
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
+      throw new Error('Python processing service is not responding (timeout). Please try again later.');
+    }
+    if (err.code === 'ECONNREFUSED') {
+      throw new Error('Python processing service is not running. Please contact the administrator.');
+    }
+    throw new Error(`Python processing service health check failed: ${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // Helper function to process sheet music asynchronously
 async function processSheetMusicAsync(
   sheetId: string,
@@ -253,6 +379,9 @@ async function processSheetMusicAsync(
   fileType: "pdf" | "musicxml"
 ) {
   try {
+    // Fail fast if the Python service is unreachable
+    await checkPythonServiceHealth();
+
     // Call Python service
     const formData = new FormData();
     formData.append('file', fileBuffer, {
@@ -298,16 +427,17 @@ async function processSheetMusicAsync(
       voiceAssignments[part.index.toString()] = part.detected_voice;
     }
 
-    // Update database with analysis results
+    // Update database with analysis results (keep "processing" until MIDI is done)
     await updateSheetMusic(sheetId, {
-      status: "ready",
       musicxmlKey,
       analysisResult: result.analysis,
       voiceAssignments,
     });
 
-    // Generate MIDI files
-    await regenerateMidiAsync(sheet.userId, sheetId, musicxmlKey, voiceAssignments);
+    // Generate MIDI files, then set status to "ready"
+    await enqueueMidiRegeneration(sheet.userId, sheetId, musicxmlKey, voiceAssignments);
+
+    await updateSheetMusic(sheetId, { status: "ready" });
 
   } catch (error) {
     console.error("Processing error:", error);
@@ -316,6 +446,34 @@ async function processSheetMusicAsync(
       errorMessage: error instanceof Error ? error.message : "Unknown error",
     });
   }
+}
+
+/**
+ * Enqueue a MIDI regeneration for the given sheet. If a regeneration is already
+ * running for this sheetId, the new one waits for it to finish first. Different
+ * sheets process in parallel.
+ */
+function enqueueMidiRegeneration(
+  userId: string,
+  sheetId: string,
+  musicxmlKey: string,
+  voiceAssignments: Record<string, string>
+): Promise<void> {
+  const previous = midiGenerationLocks.get(sheetId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {}) // don't let a previous failure block the chain
+    .then(() => regenerateMidiAsync(userId, sheetId, musicxmlKey, voiceAssignments));
+
+  midiGenerationLocks.set(sheetId, next);
+
+  // Clean up the map entry when this promise settles (if it's still the latest)
+  next.finally(() => {
+    if (midiGenerationLocks.get(sheetId) === next) {
+      midiGenerationLocks.delete(sheetId);
+    }
+  });
+
+  return next;
 }
 
 // Helper function to regenerate MIDI files

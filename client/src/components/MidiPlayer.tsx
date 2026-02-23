@@ -25,11 +25,16 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const [voiceControls, setVoiceControls] = useState<VoiceControl[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [failedVoices, setFailedVoices] = useState<string[]>([]);
 
   const synthsRef = useRef<Map<string, Tone.PolySynth>>(new Map());
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
   const midiDataRef = useRef<Map<string, Midi>>(new Map());
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Track whether we're resuming from a pause (true) vs starting fresh (false).
+  // When resuming, the Transport's position and the already-scheduled Part events
+  // are still intact — we must NOT cancel/reset them or playback restarts from 0.
+  const isPausedRef = useRef(false);
 
   // Voice labels mapping
   const voiceLabels: Record<string, string> = {
@@ -56,11 +61,14 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
     const loadMidiFiles = async () => {
       setIsLoading(true);
 
-      try {
-        // Create synths for each voice
-        for (const voice of availableVoices) {
-          if (voice === "all") continue; // Skip "all" voice
+      const failed: string[] = [];
+      let maxDuration = 0;
 
+      for (const voice of availableVoices) {
+        if (voice === "all") continue;
+
+        try {
+          // Create synth for this voice
           const synth = new Tone.PolySynth(Tone.Synth, {
             oscillator: { type: "sine" },
             envelope: {
@@ -71,33 +79,27 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
             },
           }).toDestination();
 
-          synth.volume.value = -10; // Default volume
+          synth.volume.value = -10;
           synthsRef.current.set(voice, synth);
-        }
-
-        // Load MIDI data
-        let maxDuration = 0;
-
-        for (const voice of availableVoices) {
-          if (voice === "all") continue;
 
           const url = midiUrls[voice];
-          if (!url) continue;
+          if (!url) {
+            failed.push(voice);
+            continue;
+          }
 
           const response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const arrayBuffer = await response.arrayBuffer();
           const midi = new Midi(arrayBuffer);
 
           midiDataRef.current.set(voice, midi);
 
-          // Track max duration
           if (midi.duration > maxDuration) {
             maxDuration = midi.duration;
           }
 
-          // Create Tone.Part for this voice
           const notes: any[] = [];
-
           midi.tracks.forEach(track => {
             track.notes.forEach(note => {
               notes.push({
@@ -123,15 +125,21 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
           part.loop = false;
           partsRef.current.set(voice, part);
+        } catch (error) {
+          console.error(`Failed to load MIDI for voice "${voice}":`, error);
+          failed.push(voice);
         }
-
-        setDuration(maxDuration);
-        setIsLoading(false);
-      } catch (error) {
-        console.error("Failed to load MIDI files:", error);
-        setLoadError("Failed to load MIDI files. Please refresh the page and try again.");
-        setIsLoading(false);
       }
+
+      setFailedVoices(failed);
+
+      if (failed.length === availableVoices.filter(v => v !== "all").length) {
+        // All voices failed
+        setLoadError("Failed to load MIDI files. Please refresh the page and try again.");
+      }
+
+      setDuration(maxDuration);
+      setIsLoading(false);
     };
 
     if (Object.keys(midiUrls).length > 0) {
@@ -176,16 +184,22 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const startPlayback = async () => {
     await Tone.start();
 
-    // Cancel previously scheduled events and re-schedule parts from the beginning.
-    // This prevents doubled notes if the user plays → stops → plays again.
-    Tone.getTransport().cancel(0);
-    Tone.getTransport().seconds = 0;
+    if (!isPausedRef.current) {
+      // Fresh start (or after Stop): cancel any previously scheduled events and
+      // reset the transport position so playback begins at the start.
+      // This prevents doubled notes if the user plays → stops → plays again.
+      Tone.getTransport().cancel(0);
+      Tone.getTransport().seconds = 0;
 
-    // Start all parts from beat 0
-    partsRef.current.forEach(part => {
-      part.start(0);
-    });
+      // (Re-)schedule all parts from beat 0
+      partsRef.current.forEach(part => {
+        part.start(0);
+      });
+    }
+    // If isPausedRef.current === true, the Transport position and scheduled Part
+    // events were preserved by pause() — just call start() to resume in place.
 
+    isPausedRef.current = false;
     Tone.getTransport().start();
     setIsPlaying(true);
 
@@ -202,6 +216,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   const pausePlayback = () => {
     Tone.getTransport().pause();
+    isPausedRef.current = true;
     setIsPlaying(false);
 
     if (progressIntervalRef.current) {
@@ -213,6 +228,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   const stopPlayback = () => {
     Tone.getTransport().stop();
     Tone.getTransport().seconds = 0; // Reset position so replay starts from beginning
+    isPausedRef.current = false; // Next play should be a fresh start, not a resume
     setIsPlaying(false);
     setProgress(0);
 
@@ -316,6 +332,16 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
 
   return (
     <Card className="p-6 space-y-6 dark:bg-gray-800 dark:border-gray-700">
+      {/* Partial load warning */}
+      {failedVoices.length > 0 && !loadError && (
+        <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-400">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          <p className="text-sm">
+            Could not load: {failedVoices.join(", ")}. Other voices are still playable.
+          </p>
+        </div>
+      )}
+
       {/* Playback Controls */}
       <div className="space-y-4">
         <div className="flex items-center gap-4">
