@@ -53,5 +53,6 @@ COPY --from=frontend-builder /app/dist ./dist
 EXPOSE 3000
 EXPOSE 8001
 
-# Start Node.js server and Python service concurrently
-CMD ["sh", "-c", "node dist/index.js & python3 python_service/music_processor.py && wait"]
+# Start Python service in background, Node.js in foreground.
+# If either process dies, the container exits.
+CMD ["sh", "-c", "python3 python_service/music_processor.py & PY_PID=$!; node dist/index.js & NODE_PID=$!; wait -n $PY_PID $NODE_PID; kill $PY_PID $NODE_PID 2>/dev/null; exit 1"]

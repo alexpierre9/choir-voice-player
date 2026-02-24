@@ -16,7 +16,7 @@ module.exports = {
     {
       name: 'choir-omr-service',
       script: 'python_service/music_processor.py',
-      interpreter: 'python_service/venv/bin/python',
+      interpreter: 'python_service/.venv/bin/python',
       instances: 1,
       autorestart: true,
       watch: false,

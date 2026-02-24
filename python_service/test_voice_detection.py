@@ -57,9 +57,9 @@ class TestVoiceDetection(unittest.TestCase):
         result = self.processor._detect_voice_type("Contralto", "treble", (55, 67))
         self.assertEqual(result, VoiceType.ALTO)
 
-        # Test baritone
+        # Test baritone — in SATB choir convention, baritone sings with bass section
         result = self.processor._detect_voice_type("Baritone", "bass", (45, 57))
-        self.assertEqual(result, VoiceType.TENOR)
+        self.assertEqual(result, VoiceType.BASS)
 
     def test_clef_based_detection(self):
         """Test that clef types help identify voice types when no name is available"""
