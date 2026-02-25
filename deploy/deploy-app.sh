@@ -62,7 +62,9 @@ pnpm run build
 echo -e "${GREEN}Step 6: Setting up database schema...${NC}"
 pnpm db:push
 
-# P-03: use the ecosystem.config.js already in the repo — do NOT overwrite it.
+# P-03: use the ecosystem.config.cjs already in the repo — do NOT overwrite it.
+# The .cjs extension is required because package.json has "type":"module" (Node 22
+# treats plain .js as ESM; module.exports would throw ReferenceError).
 # The repo version has the correct script path (dist/index.js), venv interpreter,
 # cwd, and all required env var forwarding.
 
@@ -72,7 +74,7 @@ mkdir -p /var/log/choir-voice-player
 echo -e "${GREEN}Step 8: Starting applications with PM2...${NC}"
 # P-11: only delete this app's processes, not all PM2 processes
 pm2 delete choir-satb choir-omr-service 2>/dev/null || true
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.cjs
 pm2 save
 
 echo -e "${GREEN}Step 8b: Configuring PM2 log rotation...${NC}"
