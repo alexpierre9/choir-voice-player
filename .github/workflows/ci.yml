@@ -30,4 +30,6 @@ jobs:
         run: pnpm check
 
       - name: Run tests
-        run: pnpm test
+        # P-04: --passWithNoTests lets CI succeed when no test files exist yet
+        # while still failing if existing tests break.
+        run: pnpm test -- --passWithNoTests

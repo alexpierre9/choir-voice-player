@@ -11,6 +11,22 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Progress } from "@/components/ui/progress";
 
+// F-02: map of accepted extensions → file type
+const ACCEPTED_EXTENSIONS: Record<string, "pdf" | "musicxml"> = {
+  ".pdf": "pdf",
+  ".xml": "musicxml",
+  ".musicxml": "musicxml",
+  ".mxl": "musicxml",
+};
+
+function getFileType(name: string): "pdf" | "musicxml" | null {
+  const lower = name.toLowerCase();
+  for (const [ext, type] of Object.entries(ACCEPTED_EXTENSIONS)) {
+    if (lower.endsWith(ext)) return type;
+  }
+  return null;
+}
+
 export default function Upload() {
   // Redirect to /login (with return path) if the user is not authenticated.
   useAuth({ redirectOnUnauthenticated: true });
@@ -21,6 +37,8 @@ export default function Upload() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadPhase, setUploadPhase] = useState<"idle" | "reading" | "uploading">("idle");
   const [readProgress, setReadProgress] = useState(0);
+  // F-08: track drag-over state for visual feedback
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadMutation = trpc.sheetMusic.upload.useMutation({
@@ -38,6 +56,12 @@ export default function Upload() {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // F-02: reject files whose extension is not an accepted music format
+      if (!getFileType(file.name)) {
+        toast.error("Unsupported file type. Please upload a PDF or MusicXML file (.pdf, .xml, .musicxml, .mxl).");
+        e.target.value = "";
+        return;
+      }
       if (file.size > 50 * 1024 * 1024) { // 50MB limit
         toast.error("File too large. Maximum size is 50MB");
         return;
@@ -81,7 +105,8 @@ export default function Upload() {
 
     setUploadPhase("uploading");
 
-    const fileType = selectedFile.name.toLowerCase().endsWith(".pdf") ? "pdf" : "musicxml";
+    // F-02: validated extension → type (getFileType returns non-null here since we validated on select/drop)
+    const fileType = getFileType(selectedFile.name) ?? "musicxml";
     await uploadMutation.mutateAsync({
       filename: selectedFile.name,
       fileType,
@@ -92,8 +117,14 @@ export default function Upload() {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    setIsDragging(false); // F-08
     const file = e.dataTransfer.files[0];
     if (file) {
+      // F-02: reject unsupported extensions on drop too
+      if (!getFileType(file.name)) {
+        toast.error("Unsupported file type. Please upload a PDF or MusicXML file (.pdf, .xml, .musicxml, .mxl).");
+        return;
+      }
       if (file.size > 50 * 1024 * 1024) {
         toast.error("File too large. Maximum size is 50MB");
         return;
@@ -103,6 +134,9 @@ export default function Upload() {
     }
   };
 
+  // F-08: visual feedback while dragging a file over the drop zone
+  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
   return (
@@ -124,9 +158,15 @@ export default function Upload() {
               role="button"
               tabIndex={0}
               aria-label="Upload sheet music file"
-              className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer"
+              className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer ${
+                isDragging
+                  ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                  : "border-gray-300 hover:border-blue-500"
+              }`}
               onDrop={handleDrop}
               onDragOver={handleDragOver}
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
               onClick={() => fileInputRef.current?.click()}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
             >

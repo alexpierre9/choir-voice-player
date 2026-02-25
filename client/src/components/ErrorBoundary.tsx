@@ -22,6 +22,11 @@ class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
+  // F-09: log render errors to the console (or a future error-reporting service)
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    console.error("[ErrorBoundary] Uncaught render error:", error, errorInfo);
+  }
+
   render() {
     if (this.state.hasError) {
       const { showDetails, error } = this.state;

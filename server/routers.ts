@@ -24,6 +24,13 @@ import fs from "fs/promises";
 // Python service URL
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
 
+// B-10: Internal auth header sent on every request to the Python service.
+// When INTERNAL_SERVICE_TOKEN is set, the Python service will reject calls
+// that don't carry this header, preventing unauthenticated direct access.
+const INTERNAL_TOKEN_HEADER: Record<string, string> = ENV.internalServiceToken
+  ? { "X-Internal-Token": ENV.internalServiceToken }
+  : {};
+
 // Per-sheet lock to prevent concurrent MIDI generation.
 // Each entry chains promises so only one regeneration runs at a time per sheet.
 const midiGenerationLocks = new Map<string, Promise<void>>();
@@ -94,7 +101,7 @@ export const appRouter = router({
         filename: z.string(),
         fileType: z.enum(["pdf", "musicxml"]),
         fileData: z.string(), // base64 encoded
-        title: z.string().max(255).optional(),
+        title: z.string().trim().max(255).optional(), // B-13: trim whitespace
       }))
       .mutation(async ({ ctx, input }) => {
         const userId = ctx.user.id;
@@ -103,10 +110,13 @@ export const appRouter = router({
         // Decode file data
         const fileBuffer = Buffer.from(input.fileData, 'base64');
 
-        // Validate file size (max 50MB)
-        const maxSize = 50 * 1024 * 1024; // 50MB in bytes
+        // B-08: return 400 (BAD_REQUEST) instead of an opaque 500
+        const maxSize = 50 * 1024 * 1024; // 50 MB
         if (fileBuffer.length > maxSize) {
-          throw new Error(`File size exceeds maximum allowed size of ${maxSize / (1024 * 1024)}MB`);
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `File size exceeds the maximum allowed size of ${maxSize / (1024 * 1024)} MB`,
+          });
         }
 
         // Save original file to local storage
@@ -132,8 +142,8 @@ export const appRouter = router({
           status: "processing",
         });
 
-        // Process file asynchronously
-        processSheetMusicAsync(sheetId, fileBuffer, input.fileType).catch(async err => {
+        // B-14: pass userId so the async pipeline doesn't need an extra DB round-trip
+        processSheetMusicAsync(sheetId, userId, fileBuffer, input.fileType).catch(async err => {
           console.error(`Failed to process sheet music ${sheetId}:`, err);
           try {
             await updateSheetMusic(sheetId, {
@@ -153,17 +163,17 @@ export const appRouter = router({
 
     // Get sheet music by ID
     get: protectedProcedure
-      .input(z.object({ id: z.string() }))
+      .input(z.object({ id: z.string().min(1).max(64) })) // B-09: length validation
       .query(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
 
+        // B-03: use TRPCError with proper codes — NOT raw Error (which becomes HTTP 500)
         if (!sheet) {
-          throw new Error("Sheet music not found");
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
         }
 
-        // Check ownership
         if (sheet.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
+          throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
 
         return sheet;
@@ -171,9 +181,13 @@ export const appRouter = router({
 
     // Rename sheet music
     rename: protectedProcedure
-      .input(z.object({ id: z.string(), title: z.string().min(1).max(255) }))
+      .input(z.object({
+        id: z.string().min(1).max(64),              // B-09
+        title: z.string().trim().min(1).max(255),   // B-13: trim whitespace
+      }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
+        // B-03: TRPCError
         if (!sheet) throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
         if (sheet.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         await updateSheetMusic(input.id, { title: input.title });
@@ -189,18 +203,19 @@ export const appRouter = router({
     // Update voice assignments and regenerate MIDI
     updateVoiceAssignments: protectedProcedure
       .input(z.object({
-        id: z.string(),
+        id: z.string().min(1).max(64), // B-09
         voiceAssignments: z.record(z.string(), z.enum(["soprano", "alto", "tenor", "bass", "other"])),
       }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
 
+        // B-03: TRPCError with proper codes
         if (!sheet) {
-          throw new Error("Sheet music not found");
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
         }
 
         if (sheet.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
+          throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
 
         // Update voice assignments, set status back to processing, clear stale MIDI keys
@@ -229,29 +244,30 @@ export const appRouter = router({
     // Get MIDI file URL
     getMidiUrl: protectedProcedure
       .input(z.object({
-        id: z.string(),
-        voice: z.string(), // "soprano", "alto", "tenor", "bass", or "all"
+        id: z.string().min(1).max(64), // B-09
+        voice: z.string(),
       }))
       .query(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
 
+        // B-03: TRPCError with proper codes
         if (!sheet) {
-          throw new Error("Sheet music not found");
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
         }
 
         if (sheet.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
+          throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
 
         if (!sheet.midiFileKeys) {
-          throw new Error("MIDI files not generated yet");
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MIDI files not generated yet" });
         }
 
         const midiKeys = sheet.midiFileKeys as Record<string, string>;
         const midiKey = midiKeys[input.voice] ?? midiKeys["all"];
 
         if (!midiKey) {
-          throw new Error(`MIDI file for voice ${input.voice} not found`);
+          throw new TRPCError({ code: "NOT_FOUND", message: `MIDI file for voice "${input.voice}" not found` });
         }
 
         // Generate presigned URL (5 minutes)
@@ -262,19 +278,20 @@ export const appRouter = router({
 
     // Delete sheet music
     delete: protectedProcedure
-      .input(z.object({ id: z.string() }))
+      .input(z.object({ id: z.string().min(1).max(64) })) // B-09
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
 
+        // B-03: TRPCError with proper codes
         if (!sheet) {
-          throw new Error("Sheet music not found");
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
         }
 
         if (sheet.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
+          throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
 
-        // Delete S3 files asynchronously (don't block on failures)
+        // Delete storage files asynchronously (don't block on individual failures)
         const deletePromises: Promise<void>[] = [];
 
         if (sheet.originalFileKey) {
@@ -307,7 +324,6 @@ export const appRouter = router({
           }
         }
 
-        // Wait for all deletions to complete (with individual error handling)
         await Promise.all(deletePromises);
 
         await deleteSheetMusic(input.id);
@@ -317,7 +333,7 @@ export const appRouter = router({
 
     // Retry failed processing
     retry: protectedProcedure
-      .input(z.object({ id: z.string() }))
+      .input(z.object({ id: z.string().min(1).max(64) })) // B-09
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
 
@@ -337,9 +353,21 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "Original file not found; cannot retry" });
         }
 
-        // Read the original file from storage
+        // B-07: handle both local storage (filePath) and cloud storage (url) adapters
         const storageResult = await storageGet(sheet.originalFileKey, 300);
-        const fileBuffer = await fs.readFile(storageResult.filePath);
+        let fileBuffer: Buffer;
+        if ('filePath' in storageResult && storageResult.filePath) {
+          fileBuffer = await fs.readFile(storageResult.filePath);
+        } else {
+          const fileRes = await fetch(storageResult.url);
+          if (!fileRes.ok) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Failed to fetch original file from storage.",
+            });
+          }
+          fileBuffer = Buffer.from(await fileRes.arrayBuffer());
+        }
 
         // Reset to processing state
         await updateSheetMusic(input.id, {
@@ -351,8 +379,8 @@ export const appRouter = router({
           midiFileKeys: null,
         });
 
-        // Re-run async pipeline
-        processSheetMusicAsync(input.id, fileBuffer, sheet.fileType).catch(async err => {
+        // B-14: pass userId directly — no extra DB round-trip needed
+        processSheetMusicAsync(input.id, sheet.userId, fileBuffer, sheet.fileType).catch(async err => {
           console.error(`Failed to retry processing sheet music ${input.id}:`, err);
           try {
             await updateSheetMusic(input.id, {
@@ -414,9 +442,11 @@ async function checkPythonServiceHealth(): Promise<void> {
   }
 }
 
-// Helper function to process sheet music asynchronously
+// B-14: userId is now passed as a parameter to avoid a redundant DB round-trip
+// inside the async pipeline (the upload/retry callers already have it).
 async function processSheetMusicAsync(
   sheetId: string,
+  userId: string,
   fileBuffer: Buffer,
   fileType: "pdf" | "musicxml"
 ) {
@@ -437,10 +467,14 @@ async function processSheetMusicAsync(
 
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s — multi-page PDFs take longer
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 s for multi-page PDFs
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
+      headers: {
+        ...formData.getHeaders(),
+        ...INTERNAL_TOKEN_HEADER, // B-10: internal auth
+      },
       signal: controller.signal as any,
     });
     clearTimeout(timeoutId);
@@ -462,11 +496,8 @@ async function processSheetMusicAsync(
 
     await updateSheetMusic(sheetId, { errorMessage: "Storing score…" });
 
-    // Upload MusicXML to local storage
-    const sheet = await getSheetMusic(sheetId);
-    if (!sheet) throw new Error("Sheet not found");
-
-    const musicxmlKey = `sheet-music/${sheet.userId}/${sheetId}/score.musicxml`;
+    // B-14: use userId parameter directly — no getSheetMusic() call needed
+    const musicxmlKey = `sheet-music/${userId}/${sheetId}/score.musicxml`;
     await storagePut(musicxmlKey, result.musicxml, "application/xml");
 
     // Create initial voice assignments from analysis
@@ -484,7 +515,7 @@ async function processSheetMusicAsync(
     });
 
     // Generate MIDI files, then set status to "ready"
-    await enqueueMidiRegeneration(sheet.userId, sheetId, musicxmlKey, voiceAssignments);
+    await enqueueMidiRegeneration(userId, sheetId, musicxmlKey, voiceAssignments);
 
     await updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
 
@@ -539,10 +570,10 @@ async function regenerateMidiAsync(
       throw new Error("Sheet not found");
     }
 
-    // Check if the voice assignments are still the same as when this regeneration was triggered
+    // Cancel if voice assignments changed since this regeneration was triggered
     if (JSON.stringify(currentSheet.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
       console.log(`MIDI regeneration for ${sheetId} cancelled - voice assignments have changed`);
-      return; // Cancel this regeneration since newer assignments exist
+      return;
     }
 
     // Read MusicXML content — supports both local (filePath) and cloud (URL) storage adapters
@@ -562,10 +593,14 @@ async function regenerateMidiAsync(
     formData.append('voice_assignments', JSON.stringify(voiceAssignments));
 
     const midiController = new AbortController();
-    const midiTimeoutId = setTimeout(() => midiController.abort(), 60000); // 60s for MIDI generation
+    const midiTimeoutId = setTimeout(() => midiController.abort(), 60000); // 60 s for MIDI generation
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
+      headers: {
+        ...formData.getHeaders(),
+        ...INTERNAL_TOKEN_HEADER, // B-10: internal auth
+      },
       signal: midiController.signal as any,
     });
     clearTimeout(midiTimeoutId);
@@ -592,7 +627,7 @@ async function regenerateMidiAsync(
 
     if (JSON.stringify(sheetAfterProcessing.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
       console.log(`MIDI regeneration for ${sheetId} cancelled after processing - voice assignments have changed`);
-      return; // Cancel this update since newer assignments exist
+      return;
     }
 
     // Save MIDI files to local storage
@@ -616,4 +651,3 @@ async function regenerateMidiAsync(
     throw error;
   }
 }
-

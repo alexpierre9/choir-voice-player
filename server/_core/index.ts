@@ -37,8 +37,18 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  // B-15: Guard against connections that stall while sending the request body.
+  // 5 minutes is generous enough for a 50 MB file upload on a slow connection.
+  server.requestTimeout = 5 * 60 * 1000;
+
   // Trust proxy (required for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
+
+  // Health check for Docker healthchecks and uptime monitors.
+  // Registered before rate limiters so it always responds immediately.
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
 
   // General API rate limiter - 100 requests per 15 minutes per IP
   const generalLimiter = rateLimit({

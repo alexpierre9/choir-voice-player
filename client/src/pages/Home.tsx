@@ -17,7 +17,8 @@ export default function Home() {
   // Only fetch the list once we know the user is authenticated — avoids an
   // UNAUTHORIZED error (and the resulting redirect-to-login) for visitors
   // who land on the home page without a session.
-  const { data: userSheets, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
+  // F-07: also track isLoading so we can show a skeleton instead of a blank section
+  const { data: userSheets, isLoading: sheetsLoading, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
     enabled: !!user,
   });
 
@@ -112,7 +113,23 @@ export default function Home() {
             )}
           </div>
 
-          {sheetsError ? (
+          {/* F-07: show skeleton while the list is fetching to avoid layout shift */}
+          {sheetsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[...Array(3)].map((_, i) => (
+                <Card key={i} className="p-4 animate-pulse dark:bg-gray-800 dark:border-gray-700">
+                  <div className="flex items-start gap-3">
+                    <div className="h-6 w-6 bg-gray-200 dark:bg-gray-600 rounded flex-shrink-0 mt-1" />
+                    <div className="flex-1 space-y-2 py-1">
+                      <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-3/4" />
+                      <div className="h-3 bg-gray-200 dark:bg-gray-600 rounded w-1/2" />
+                      <div className="h-5 bg-gray-200 dark:bg-gray-600 rounded w-14 mt-2" />
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : sheetsError ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">
               Could not load your uploads. Please refresh the page.
             </p>

@@ -35,8 +35,8 @@ npm install -g pnpm pm2
 echo -e "${GREEN}Step 5: Installing Python 3.11 and pip...${NC}"
 apt-get install -y python3.11 python3.11-venv python3-pip python3.11-dev
 
-echo -e "${GREEN}Step 6: Installing Python dependencies...${NC}"
-pip3 install oemer music21 pdf2image pillow fastapi uvicorn python-multipart
+# P-02: Python app packages are installed into the project venv by deploy-app.sh
+# after the repo is cloned. Do NOT install them globally here.
 
 echo -e "${GREEN}Step 7: Installing MySQL...${NC}"
 apt-get install -y mysql-server

@@ -451,7 +451,7 @@ Rules:
             return instrument.Vocalist()
 
 # FastAPI endpoints
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -470,6 +470,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# B-10: Internal service token — when set, all /api/* endpoints require the
+# caller (Node.js server) to send the matching X-Internal-Token header.
+# This prevents unauthenticated direct access and Gemini API quota abuse.
+INTERNAL_SERVICE_TOKEN = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
+
+if not INTERNAL_SERVICE_TOKEN:
+    logger.warning(
+        "INTERNAL_SERVICE_TOKEN is not set. "
+        "The /api/* endpoints are accessible without authentication. "
+        "Set this variable in production to match the Node.js server setting."
+    )
+
+
+async def verify_internal_token(x_internal_token: Optional[str] = Header(None)) -> None:
+    """Validate the shared internal service token.
+
+    Only enforced when INTERNAL_SERVICE_TOKEN is configured — allows the
+    service to run unauthenticated in local development without extra setup.
+    """
+    if INTERNAL_SERVICE_TOKEN and x_internal_token != INTERNAL_SERVICE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden: invalid internal service token")
+
 
 def create_temp_processor():
     """Create a temporary processor instance for a single request"""
@@ -477,7 +499,10 @@ def create_temp_processor():
 
 
 @app.post("/api/process-pdf")
-async def process_pdf(file: UploadFile = File(...)):
+async def process_pdf(
+    file: UploadFile = File(...),
+    _: None = Depends(verify_internal_token),  # B-10: require internal auth
+):
     """Process PDF sheet music using OMR"""
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(400, "File must be a PDF")
@@ -486,11 +511,11 @@ async def process_pdf(file: UploadFile = File(...)):
     if len(file_content) > 50 * 1024 * 1024:
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    filename = file.filename
-
     def _run():
         with create_temp_processor() as processor:
-            pdf_path = os.path.join(processor.temp_dir, filename)
+            # B-04: use a hardcoded safe filename — never trust the client-supplied
+            # filename which could contain path traversal sequences (e.g. "../etc/passwd")
+            pdf_path = os.path.join(processor.temp_dir, "input.pdf")
             with open(pdf_path, 'wb') as f:
                 f.write(file_content)
             musicxml_path = processor.process_pdf(pdf_path)
@@ -510,7 +535,10 @@ async def process_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/process-musicxml")
-async def process_musicxml(file: UploadFile = File(...)):
+async def process_musicxml(
+    file: UploadFile = File(...),
+    _: None = Depends(verify_internal_token),  # B-10: require internal auth
+):
     """Process uploaded MusicXML file"""
     if not (file.filename.lower().endswith('.xml') or file.filename.lower().endswith('.musicxml') or file.filename.lower().endswith('.mxl')):
         raise HTTPException(400, "File must be MusicXML (.xml, .musicxml, or .mxl)")
@@ -519,11 +547,10 @@ async def process_musicxml(file: UploadFile = File(...)):
     if len(file_content) > 50 * 1024 * 1024:
         raise HTTPException(413, "File too large. Maximum size is 50MB")
 
-    filename = file.filename
-
     def _run():
         with create_temp_processor() as processor:
-            musicxml_path = os.path.join(processor.temp_dir, filename)
+            # B-04: hardcoded safe filename prevents path traversal
+            musicxml_path = os.path.join(processor.temp_dir, "input.musicxml")
             with open(musicxml_path, 'wb') as f:
                 f.write(file_content)
             analysis = processor.analyze_musicxml(musicxml_path)
@@ -544,7 +571,8 @@ async def process_musicxml(file: UploadFile = File(...)):
 @app.post("/api/generate-midi")
 async def generate_midi(
     musicxml: str = Form(...),
-    voice_assignments: str = Form(...)
+    voice_assignments: str = Form(...),
+    _: None = Depends(verify_internal_token),  # B-10: require internal auth
 ):
     """Generate MIDI files for each voice"""
 
@@ -597,7 +625,8 @@ async def generate_midi(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint — intentionally unauthenticated so the Node.js
+    server can probe it without needing to set up auth headers."""
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
 
     return {

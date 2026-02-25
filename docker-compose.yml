@@ -5,33 +5,52 @@ services:
     build: .
     ports:
       - "3000:3000"
-      - "8001:8001"
+      # Port 8001 (Python service) is intentionally NOT exposed — it is an
+      # internal service reachable only within the Docker network.
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=${JWT_SECRET:-$(openssl rand -base64 32)}
-      - VITE_APP_ID=${VITE_APP_ID}
-      - OAUTH_SERVER_URL=${OAUTH_SERVER_URL}
-      - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL}
-      - BUILT_IN_FORGE_API_URL=${BUILT_IN_FORGE_API_URL}
-      - BUILT_IN_FORGE_API_KEY=${BUILT_IN_FORGE_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTH_PASSPHRASE=${AUTH_PASSPHRASE}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
       - PYTHON_SERVICE_PORT=8001
+      - LOCAL_STORAGE_DIR=${LOCAL_STORAGE_DIR:-/var/lib/choir-files}
     depends_on:
-      - db
+      # P-09: wait until MySQL is confirmed healthy before starting the app
+      db:
+        condition: service_healthy
     volumes:
       - ./logs:/app/logs
+      - choir_files:/var/lib/choir-files
+    # P-09: Docker can restart the container if the app crashes silently
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   db:
     image: mysql:8.0
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      # B-02: Use an env var — never hardcode the root password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: choir_voice_player
-    ports:
-      - "3306:3306"
+    # P-09: do NOT expose 3306 publicly — MySQL is internal to the Docker network
+    expose:
+      - "3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    # P-09: healthcheck lets the app service wait until MySQL accepts connections
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   mysql_data:
+  choir_files:

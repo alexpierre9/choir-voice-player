@@ -2,22 +2,37 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1"
-    />
+    <!-- F-03: removed maximum-scale=1 (WCAG 1.4.4 – users must be able to zoom) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="%VITE_APP_LOGO%" />
     <link rel="apple-touch-icon" href="%VITE_APP_LOGO%" />
     <title>%VITE_APP_TITLE%</title>
+    <!-- F-10: apply stored theme before first paint to prevent flash of default theme -->
+    <script>
+      try {
+        var s = localStorage.getItem('theme');
+        var d = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (s === 'dark' || (!s && d)) document.documentElement.classList.add('dark');
+      } catch (e) {}
+    </script>
   </head>
 
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script
-      defer
-      src="%VITE_ANALYTICS_ENDPOINT%/umami"
-      data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"
-    ></script>
+    <!-- F-11: only inject analytics script when VITE_ANALYTICS_ENDPOINT is configured;
+         without this guard Vite replaces the var with "" producing src="/umami" -->
+    <script>
+      (function () {
+        var ep = "%VITE_ANALYTICS_ENDPOINT%";
+        if (ep) {
+          var el = document.createElement("script");
+          el.defer = true;
+          el.src = ep + "/umami";
+          el.setAttribute("data-website-id", "%VITE_ANALYTICS_WEBSITE_ID%");
+          document.head.appendChild(el);
+        }
+      })();
+    </script>
   </body>
 </html>

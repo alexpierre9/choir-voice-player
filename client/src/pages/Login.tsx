@@ -14,7 +14,10 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
 
   // Read optional post-login redirect from ?redirect=...
-  const redirectTo = new URLSearchParams(window.location.search).get("redirect") ?? "/";
+  // F-01: only allow same-origin relative paths (e.g. "/sheet/123") to prevent open-redirect attacks.
+  // Protocol-relative (//evil.com) and absolute URLs are silently replaced with "/".
+  const rawRedirect = new URLSearchParams(window.location.search).get("redirect") ?? "/";
+  const redirectTo = /^\/(?!\/)/.test(rawRedirect) ? rawRedirect : "/";
 
   const utils = trpc.useUtils();
   const { mutate: login, isPending } = trpc.auth.login.useMutation({

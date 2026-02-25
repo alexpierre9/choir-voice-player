@@ -22,6 +22,15 @@ interface MidiPlayerProps {
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5] as const;
 type Speed = (typeof SPEED_OPTIONS)[number];
 
+// F-13: moved to module scope — recreating this object on every render is wasteful
+const voiceLabels: Record<string, string> = {
+  soprano: "Soprano",
+  alto: "Alto",
+  tenor: "Tenor",
+  bass: "Bass",
+  all: "All Voices",
+};
+
 export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -44,15 +53,6 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   // When resuming, the Transport's position and the already-scheduled Part events
   // are still intact — we must NOT cancel/reset them or playback restarts from 0.
   const isPausedRef = useRef(false);
-
-  // Voice labels mapping
-  const voiceLabels: Record<string, string> = {
-    soprano: "Soprano",
-    alto: "Alto",
-    tenor: "Tenor",
-    bass: "Bass",
-    all: "All Voices",
-  };
 
   // Initialize voice controls
   useEffect(() => {
@@ -101,37 +101,60 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
   };
 
   // Load MIDI files (network fetch + synth creation — done once per midiUrls change)
+  // F-04: use AbortController to cancel in-flight fetches when deps change.
+  // Synths are tracked in `pendingSynths` and NOT committed to synthsRef until
+  // after ALL fetches complete — this ensures the cleanup can dispose uncommitted
+  // synths without double-disposing synths from a previous, already-committed run.
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    // Synths created in this run; not moved to synthsRef until all fetches succeed.
+    // Cleared after committing so cleanup cannot double-dispose.
+    const pendingSynths = new Map<string, Tone.PolySynth>();
+
     const loadMidiFiles = async () => {
       setIsLoading(true);
+      setLoadError(null);
 
+      const pendingMidi = new Map<string, Midi>();
       const failed: string[] = [];
 
       for (const voice of availableVoices) {
         if (voice === "all") continue;
+        if (signal.aborted) break;
 
         try {
-          // Create synth for this voice
           const synth = new Tone.PolySynth(Tone.Synth, {
             oscillator: { type: "sine" },
             envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
           }).toDestination();
 
           synth.volume.value = -10;
-          synthsRef.current.set(voice, synth);
+          pendingSynths.set(voice, synth);
 
           const url = midiUrls[voice];
           if (!url) { failed.push(voice); continue; }
 
-          const response = await fetch(url);
+          const response = await fetch(url, { signal });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const arrayBuffer = await response.arrayBuffer();
-          midiDataRef.current.set(voice, new Midi(arrayBuffer));
+
+          if (signal.aborted) break;
+          pendingMidi.set(voice, new Midi(arrayBuffer));
         } catch (error) {
+          if ((error as Error).name === "AbortError" || signal.aborted) break;
           console.error(`Failed to load MIDI for voice "${voice}":`, error);
           failed.push(voice);
         }
       }
+
+      if (signal.aborted) return;
+
+      // Commit: transfer from pending collections into the stable refs
+      pendingMidi.forEach((midi, voice) => midiDataRef.current.set(voice, midi));
+      pendingSynths.forEach((synth, voice) => synthsRef.current.set(voice, synth));
+      pendingSynths.clear(); // mark as committed so cleanup won't double-dispose
 
       setFailedVoices(failed);
 
@@ -139,7 +162,6 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
         setLoadError("Failed to load MIDI files. Please refresh the page and try again.");
       }
 
-      // Build parts at current speed
       buildParts(speedRef.current);
       setIsLoading(false);
     };
@@ -148,9 +170,12 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
       loadMidiFiles();
     }
 
-    // Cleanup
+    // Cleanup: abort any in-flight fetch, dispose uncommitted synths (aborted run),
+    // then dispose committed synths from a previously completed run.
     return () => {
+      controller.abort();
       stopPlayback();
+      pendingSynths.forEach(s => { try { s.dispose(); } catch (_) {} });
       synthsRef.current.forEach(s => { try { s.dispose(); } catch (_) {} });
       partsRef.current.forEach(p => { try { p.dispose(); } catch (_) {} });
       synthsRef.current.clear();

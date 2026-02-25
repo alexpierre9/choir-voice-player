@@ -125,12 +125,20 @@ export default function SheetDetail() {
     },
   });
 
-  // Initialize voice assignments from sheet data
+  // Initialize voice assignments from sheet data.
+  // F-05: guard on !hasChanges so the 3-second poll never overwrites edits the
+  // user has made but not yet saved. After a successful save, hasChanges is
+  // reset to false and the next refetch re-syncs from the server.
   useEffect(() => {
-    if (sheet?.voiceAssignments) {
+    if (sheet?.voiceAssignments && !hasChanges) {
       setVoiceAssignments(sheet.voiceAssignments as Record<string, string>);
     }
-  }, [sheet]);
+  }, [sheet, hasChanges]);
+
+  // F-06: stringify midiFileKeys so the effect dep uses value equality instead of
+  // reference equality — prevents unnecessary MIDI URL re-fetches on every 3-second poll
+  // (each poll creates a new object reference even when the keys haven't changed).
+  const midiFileKeysJson = JSON.stringify(sheet?.midiFileKeys ?? null);
 
   // Load MIDI URLs when sheet is ready, and refresh them every 4 minutes
   // (cloud storage pre-signed URLs expire after 5 min)
@@ -178,7 +186,7 @@ export default function SheetDetail() {
       isCancelled = true;
       if (refreshInterval) clearInterval(refreshInterval);
     };
-  }, [sheet?.status, sheet?.midiFileKeys, sheetId]);
+  }, [sheet?.status, midiFileKeysJson, sheetId]); // midiFileKeysJson replaces sheet?.midiFileKeys (F-06)
 
   // Show loading state while checking authentication (must be after all hooks)
   if (authLoading) {
