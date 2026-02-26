@@ -48,6 +48,11 @@ else:
 # Large PDFs risk hitting token limits and timeouts.
 PDF_MAX_PAGES = int(os.environ.get("PDF_MAX_PAGES", "20"))
 
+# Optional path to the poppler bin/ directory.
+# Required on Windows where poppler is not typically on the system PATH.
+# Example: POPPLER_PATH=C:\tools\poppler\bin
+POPPLER_PATH: "str | None" = os.environ.get("POPPLER_PATH") or None
+
 VALID_VOICE_TYPES = {"soprano", "alto", "tenor", "bass", "other"}
 
 
@@ -120,7 +125,7 @@ class MusicProcessor:
             raise RuntimeError("GEMINI_API_KEY is not set")
 
         # Convert PDF pages to images
-        images = convert_from_path(pdf_path, dpi=300)
+        images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
 
         if not images:
             raise ValueError("Could not extract images from PDF")
@@ -549,13 +554,26 @@ async def process_musicxml(
 
     def _run():
         with create_temp_processor() as processor:
-            # B-04: hardcoded safe filename prevents path traversal
-            musicxml_path = os.path.join(processor.temp_dir, "input.musicxml")
+            # B-04: hardcoded safe filename prevents path traversal.
+            # Detect compressed MusicXML (.mxl) by ZIP magic bytes (PK\x03\x04)
+            # so music21 can decompress it correctly regardless of the client filename.
+            is_mxl = file_content[:4] == b'PK\x03\x04'
+            input_ext = ".mxl" if is_mxl else ".musicxml"
+            musicxml_path = os.path.join(processor.temp_dir, f"input{input_ext}")
             with open(musicxml_path, 'wb') as f:
                 f.write(file_content)
             analysis = processor.analyze_musicxml(musicxml_path)
-            with open(musicxml_path, 'r', encoding="utf-8") as f:
-                musicxml_content = f.read()
+            # Re-export as plain (uncompressed) MusicXML so the response is always
+            # a UTF-8 string regardless of whether the upload was .mxl or .xml/.musicxml.
+            if is_mxl:
+                score_parsed = converter.parse(musicxml_path)
+                plain_path = os.path.join(processor.temp_dir, "score_plain.musicxml")
+                score_parsed.write('musicxml', fp=plain_path)
+                with open(plain_path, 'r', encoding="utf-8") as f:
+                    musicxml_content = f.read()
+            else:
+                with open(musicxml_path, 'r', encoding="utf-8") as f:
+                    musicxml_content = f.read()
             return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
     try:

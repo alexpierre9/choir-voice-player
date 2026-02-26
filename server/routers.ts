@@ -66,12 +66,23 @@ export const appRouter = router({
 
         // Ensure a single "owner" user row exists for foreign-key integrity.
         const OWNER_ID = "owner";
-        await upsertUser({
-          id: OWNER_ID,
-          name: "Owner",
-          loginMethod: "passphrase",
-          lastSignedIn: new Date(),
-        });
+        try {
+          await upsertUser({
+            id: OWNER_ID,
+            name: "Owner",
+            loginMethod: "passphrase",
+            lastSignedIn: new Date(),
+          });
+        } catch (dbErr: unknown) {
+          // Log the underlying MySQL error (hidden in DrizzleError.cause) for debugging.
+          const cause = (dbErr as any)?.cause ?? dbErr;
+          console.error("[Auth] upsertUser failed:", cause);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "Sign-in failed due to a database error. Run `pnpm db:push` to ensure the schema is up to date, then try again.",
+          });
+        }
 
         const sessionToken = await sdk.createSessionToken(OWNER_ID, {
           name: "Owner",
@@ -467,7 +478,7 @@ async function processSheetMusicAsync(
 
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 s for multi-page PDFs
+    const timeoutId = setTimeout(() => controller.abort(), 150000); // 150 s (> Gemini's 120 s timeout + overhead)
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
