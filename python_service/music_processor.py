@@ -164,14 +164,21 @@ class MusicProcessor:
 
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+            max_output_tokens = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
 
-            page_note = (
-                f"This score spans {len(jpeg_pages)} page(s) — all pages are provided in order."
-                if total_pages <= PDF_MAX_PAGES else
-                f"The first {len(jpeg_pages)} of {total_pages} pages are provided in order."
-            )
+            # Retry with progressively fewer pages if Gemini truncates its output
+            # (finish_reason == MAX_TOKENS). Attempts: all pages → N//2 → 1.
+            current_pages = page_limit
+            content = None
+            for attempt in range(3):
+                retry_pages = jpeg_pages[:current_pages]
+                page_note = (
+                    f"This score spans {len(retry_pages)} page(s) — all pages are provided in order."
+                    if len(retry_pages) == total_pages else
+                    f"The first {len(retry_pages)} of {total_pages} pages are provided in order."
+                )
 
-            prompt = f"""You are an expert music engraver and SATB choral score transcriber.
+                prompt = f"""You are an expert music engraver and SATB choral score transcriber.
 Transcribe this SATB choir sheet music into valid MusicXML 3.1 (score-partwise).
 {page_note}
 
@@ -225,18 +232,47 @@ The tenor sounds ONE OCTAVE LOWER than written when using the octave treble clef
 • Return ONLY the raw MusicXML text. No markdown fences, no prose, no explanations.
 • The response MUST start with <?xml and end with </score-partwise>."""
 
-            # Wrap pre-rendered JPEG bytes as Gemini content parts
-            image_parts = [
-                genai_types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg")
-                for jpeg_bytes in jpeg_pages
-            ]
+                retry_image_parts = [
+                    genai_types.Part.from_bytes(data=b, mime_type="image/jpeg")
+                    for b in retry_pages
+                ]
 
-            # Send all pages to Gemini in one request
-            response = GENAI_CLIENT.models.generate_content(
-                model=model_name,
-                contents=[prompt, *image_parts],
-            )
-            content = response.text
+                logger.info(
+                    "Gemini OMR attempt %d/%d: %d page(s), max_output_tokens=%d",
+                    attempt + 1, 3, len(retry_pages), max_output_tokens,
+                )
+                response = GENAI_CLIENT.models.generate_content(
+                    model=model_name,
+                    contents=[prompt, *retry_image_parts],
+                    config=genai_types.GenerateContentConfig(
+                        max_output_tokens=max_output_tokens,
+                    ),
+                )
+
+                # Detect truncation: if finish_reason is MAX_TOKENS the response was
+                # cut off mid-XML. Retry with half as many pages to fit the limit.
+                finish_reason = ""
+                if response.candidates:
+                    finish_reason = str(response.candidates[0].finish_reason)
+
+                if "MAX_TOKENS" in finish_reason and current_pages > 1:
+                    new_pages = max(1, current_pages // 2)
+                    logger.warning(
+                        "Gemini output truncated (MAX_TOKENS) on attempt %d with %d pages. "
+                        "Retrying with %d page(s).",
+                        attempt + 1, current_pages, new_pages,
+                    )
+                    current_pages = new_pages
+                    continue
+
+                content = response.text
+                break
+
+            if content is None:
+                raise RuntimeError(
+                    "Gemini output was truncated even when processing a single page. "
+                    "The score may be too dense for the model's output limit."
+                )
 
             # Strip any markdown code fences Gemini might add despite instructions.
             # Handle both ```xml ... ``` and ``` ... ``` variants robustly.
