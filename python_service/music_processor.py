@@ -13,7 +13,6 @@ from typing import Dict, List, Optional, Tuple
 import asyncio
 import base64
 import copy
-import io
 
 logging.basicConfig(
     level=logging.getLevelName(os.environ.get("LOG_LEVEL", "INFO")),
@@ -26,7 +25,7 @@ logger = logging.getLogger("music_processor")
 from google import genai
 from google.genai import types as genai_types
 from music21 import converter, stream, note, chord, clef, instrument
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF — self-contained PDF renderer, no external binaries (no poppler)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -55,10 +54,10 @@ else:
 # Large PDFs risk hitting token limits and timeouts.
 PDF_MAX_PAGES = int(os.environ.get("PDF_MAX_PAGES", "20"))
 
-# Optional path to the poppler bin/ directory.
-# Required on Windows where poppler is not typically on the system PATH.
-# Example: POPPLER_PATH=C:\tools\poppler\bin
-POPPLER_PATH: "str | None" = os.environ.get("POPPLER_PATH") or None
+# DPI used when rasterising PDF pages for Gemini Vision.
+# 150 DPI is sufficient for OCR and keeps JPEG payloads small.
+# PDF native resolution is 72 pt/inch, so scale = DPI / 72.
+PDF_RENDER_DPI = int(os.environ.get("PDF_RENDER_DPI", "150"))
 
 VALID_VOICE_TYPES = {"soprano", "alto", "tenor", "bass", "other"}
 
@@ -133,20 +132,35 @@ class MusicProcessor:
         if GENAI_CLIENT is None:
             raise RuntimeError("GEMINI_API_KEY is not set")
 
-        # Convert PDF pages to images
-        # 150 DPI is sufficient for Gemini Vision OCR and keeps JPEG payloads
-        # small enough to avoid upload timeouts on multi-page scores.
-        images = convert_from_path(pdf_path, dpi=150, poppler_path=POPPLER_PATH)
+        # Render PDF pages to JPEG bytes using PyMuPDF (no external binaries needed).
+        # scale = DPI / 72 because PDF native resolution is 72 pt/inch.
+        scale = PDF_RENDER_DPI / 72.0
+        mat = fitz.Matrix(scale, scale)
 
-        if not images:
-            raise ValueError("Could not extract images from PDF")
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
 
-        total_pages = len(images)
+        if total_pages == 0:
+            raise ValueError("Could not extract pages from PDF")
+
+        page_limit = min(total_pages, PDF_MAX_PAGES)
         if total_pages > PDF_MAX_PAGES:
-            logger.warning("PDF has %d pages; only the first %d will be processed.", total_pages, PDF_MAX_PAGES)
-            images = images[:PDF_MAX_PAGES]
+            logger.warning(
+                "PDF has %d pages; only the first %d will be processed.",
+                total_pages, PDF_MAX_PAGES,
+            )
 
-        logger.info("Running Gemini Vision OMR on %s (%d/%d page(s))", pdf_path, len(images), total_pages)
+        # Render each page to JPEG bytes (80% quality balances size vs. detail)
+        jpeg_pages: list = []
+        for page_num in range(page_limit):
+            pix = doc[page_num].get_pixmap(matrix=mat)
+            jpeg_pages.append(pix.tobytes("jpeg", jpg_quality=80))
+        doc.close()
+
+        logger.info(
+            "Running Gemini Vision OMR on %s (%d/%d page(s))",
+            pdf_path, len(jpeg_pages), total_pages,
+        )
 
         try:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
@@ -211,14 +225,11 @@ The tenor sounds ONE OCTAVE LOWER than written when using the octave treble clef
 • Return ONLY the raw MusicXML text. No markdown fences, no prose, no explanations.
 • The response MUST start with <?xml and end with </score-partwise>."""
 
-            # Convert PIL images to JPEG bytes for the new SDK
-            image_parts = []
-            for img in images:
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG")
-                image_parts.append(
-                    genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
-                )
+            # Wrap pre-rendered JPEG bytes as Gemini content parts
+            image_parts = [
+                genai_types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg")
+                for jpeg_bytes in jpeg_pages
+            ]
 
             # Send all pages to Gemini in one request
             response = GENAI_CLIENT.models.generate_content(
