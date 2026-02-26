@@ -32,26 +32,27 @@ Full-stack monorepo for a choir voice separation app: users upload sheet music (
 
 ### Server Core (`server/_core/`)
 
-- `index.ts` — Express setup, rate limiting, body parser (100MB limit for base64 files), Vite dev mode integration
+- `index.ts` — Express setup, request-ID middleware, access logging, rate limiting, body parser (100MB limit for base64 files), Vite dev mode integration
 - `trpc.ts` — tRPC init with SuperJSON transformer. Defines `publicProcedure`, `protectedProcedure`, `adminProcedure`
 - `context.ts` — tRPC context factory, authenticates requests via SDK
-- `sdk.ts` — JWT (HS256, jose) session management, bcrypt password hashing (12 rounds, timing-safe login)
+- `sdk.ts` — JWT (HS256, jose) session management, timing-safe passphrase comparison
 - `env.ts` — Centralized environment variable loading
 - `cookies.ts` — Session cookie config (httpOnly, sameSite varies by HTTPS)
+- `logger.ts` — Structured logger (JSON in production, human-readable in dev). Use `logger.child({ req_id })` for request-scoped logging.
 
 ### Authentication
 
-Email+password auth (migrated from Google OAuth). Key patterns:
-- Passwords hashed with bcrypt (12-round salt); login always runs bcrypt.compare even for non-existent accounts (timing-attack protection)
+Single-owner passphrase auth. Key patterns:
+- Login compares passphrase against `AUTH_PASSPHRASE` env var using `timingSafeEqual` (prevents timing attacks)
 - Sessions are JWT tokens stored in `app_session_id` cookies (1-year expiry)
-- `SafeUser` type excludes `passwordHash` from all tRPC context/responses
-- Admin role set via `OWNER_OPEN_ID` env var matching a user ID
+- The single user row has `id = "owner"` and is upserted on first login
+- `SafeUser` type is the full user row (no password hash — there is none)
 
 ### API (tRPC)
 
 All client-server communication is through tRPC. The router in `server/routers.ts` exposes:
-- `auth.me`, `auth.register`, `auth.login`, `auth.logout`
-- `sheetMusic.upload`, `.get`, `.list`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`
+- `auth.me`, `auth.login`, `auth.logout`
+- `sheetMusic.upload`, `.get`, `.list`, `.rename`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`, `.retry`
 
 Protected procedures enforce authentication via `protectedProcedure` middleware. Rate limits: 100 req/15min general, 10 uploads/15min (skipped in dev).
 
@@ -77,9 +78,11 @@ Protected procedures enforce authentication via `protectedProcedure` middleware.
 
 ### Storage
 
-Two adapters implement the same interface:
-- `server/storage.ts` — Forge cloud API (production, requires `BUILT_IN_FORGE_API_URL` / `BUILT_IN_FORGE_API_KEY`)
-- `server/storage-local.ts` — Local filesystem (VPS, files served at `/files/`, configurable via `LOCAL_STORAGE_DIR`). Includes directory traversal protection.
+Two adapters both implement `StorageAdapter` (defined in `server/storage-interface.ts`):
+- `server/storage-local.ts` — Local filesystem (active default, files served at `/files/`, configurable via `LOCAL_STORAGE_DIR`). Includes directory traversal protection.
+- `server/storage.ts` — Forge cloud API (inactive, requires `BUILT_IN_FORGE_API_URL` / `BUILT_IN_FORGE_API_KEY`).
+
+`server/storage-active.ts` is the single import point used by the rest of the server. To switch adapters, change the re-export in that file.
 
 ### Database
 

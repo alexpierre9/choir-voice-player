@@ -5,6 +5,7 @@ import { existsSync, createReadStream } from 'fs';
 import { mkdir } from 'fs/promises';
 import { COOKIE_NAME } from '@shared/const';
 import { sdk } from './_core/sdk';
+import type { StorageAdapter } from './storage-interface.js';
 
 const STORAGE_DIR = process.env.LOCAL_STORAGE_DIR || '/var/lib/choir-files';
 const RESOLVED_STORAGE_DIR = path.resolve(STORAGE_DIR);
@@ -34,7 +35,9 @@ function normalizeKey(relKey: string): string {
   return relKey.replace(/^\/+/, '');
 }
 
-export async function storagePut(
+// Type-check that this module implements the StorageAdapter interface.
+// If the signatures drift, TypeScript will flag it here.
+export const storagePut: StorageAdapter["storagePut"] = async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
@@ -56,7 +59,7 @@ export async function storagePut(
   return { key, url };
 }
 
-export async function storageGet(
+export const storageGet: StorageAdapter["storageGet"] = async function storageGet(
   relKey: string,
   _expiresIn = 300
 ): Promise<{ key: string; url: string; filePath: string }> {
@@ -64,9 +67,9 @@ export async function storageGet(
   const filePath = getFilePath(key);
   const url = `${PUBLIC_URL_BASE}/${key}`;
   return { key, url, filePath };
-}
+};
 
-export async function storageDelete(relKey: string): Promise<void> {
+export const storageDelete: StorageAdapter["storageDelete"] = async function storageDelete(relKey: string): Promise<void> {
   const filePath = getFilePath(relKey);
   try {
     await fs.unlink(filePath);
@@ -75,7 +78,7 @@ export async function storageDelete(relKey: string): Promise<void> {
       throw err;
     }
   }
-}
+};
 
 // Express middleware to serve files (authenticated, ownership-checked)
 export function createFileServerHandler() {

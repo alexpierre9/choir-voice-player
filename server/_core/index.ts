@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import { randomUUID } from "crypto";
 import rateLimit from "express-rate-limit";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 // import { registerOAuthRoutes } from "./oauth"; // disabled: using email+password auth
@@ -11,6 +12,7 @@ import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
 import { markStaleProcessingSheets } from "../db";
 import { validateEnv } from "./env";
+import { logger } from "./logger";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -43,6 +45,31 @@ async function startServer() {
 
   // Trust proxy (required for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
+
+  // Attach a unique request ID to every incoming request.
+  // Downstream code can access it via req.reqId for correlation logging.
+  app.use((req: any, _res, next) => {
+    req.reqId = randomUUID();
+    next();
+  });
+
+  // Request / response access log (method, path, status, duration).
+  app.use((req: any, res, next) => {
+    const start = Date.now();
+    res.on("finish", () => {
+      const ms = Date.now() - start;
+      const log = logger.child({ req_id: req.reqId });
+      const meta = { method: req.method, path: req.path, status: res.statusCode, ms };
+      if (res.statusCode >= 500) {
+        log.error("Request completed", meta);
+      } else if (res.statusCode >= 400) {
+        log.warn("Request completed", meta);
+      } else {
+        log.info("Request completed", meta);
+      }
+    });
+    next();
+  });
 
   // Health check for Docker healthchecks and uptime monitors.
   // Registered before rate limiters so it always responds immediately.
@@ -113,18 +140,18 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
 
   if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+    logger.warn(`Port ${preferredPort} is busy, using port ${port} instead`, { preferredPort, port });
   }
 
   server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+    logger.info(`Server running on http://localhost:${port}/`, { port });
   });
 
   // On startup: clean up any sheets that were left in "processing" state
   // (e.g. due to a crash during a previous run).
   markStaleProcessingSheets().then(count => {
     if (count > 0) {
-      console.log(`[Startup] Marked ${count} stale processing sheet(s) as error.`);
+      logger.warn(`Marked stale processing sheets as error`, { count });
     }
   }).catch(() => {});
 
@@ -132,7 +159,7 @@ async function startServer() {
   setInterval(() => {
     markStaleProcessingSheets().then(count => {
       if (count > 0) {
-        console.log(`[Stale check] Marked ${count} sheet(s) as error (timed out).`);
+        logger.warn(`Periodic stale check: marked sheets as error`, { count });
       }
     }).catch(() => {});
   }, 5 * 60 * 1000).unref(); // .unref() so it doesn't prevent clean process exit

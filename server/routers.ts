@@ -1,6 +1,7 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
+import { logger } from "./_core/logger";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
@@ -16,7 +17,7 @@ import {
   deleteSheetMusic,
   upsertUser,
 } from "./db";
-import { storagePut, storageGet, storageDelete } from "./storage-local";
+import { storagePut, storageGet, storageDelete } from "./storage-active";
 import FormData from "form-data";
 import fetch from "node-fetch";
 import fs from "fs/promises";
@@ -76,7 +77,7 @@ export const appRouter = router({
         } catch (dbErr: unknown) {
           // Log the underlying MySQL error (hidden in DrizzleError.cause) for debugging.
           const cause = (dbErr as any)?.cause ?? dbErr;
-          console.error("[Auth] upsertUser failed:", cause);
+          logger.error("upsertUser failed during login", { err: String(cause) });
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
             message:
@@ -155,14 +156,14 @@ export const appRouter = router({
 
         // B-14: pass userId so the async pipeline doesn't need an extra DB round-trip
         processSheetMusicAsync(sheetId, userId, fileBuffer, input.fileType).catch(async err => {
-          console.error(`Failed to process sheet music ${sheetId}:`, err);
+          logger.error("Failed to process sheet music", { sheetId, err: String(err) });
           try {
             await updateSheetMusic(sheetId, {
               status: "error",
               errorMessage: err.message,
             });
           } catch (updateErr) {
-            console.error(`Failed to update error status for sheet music ${sheetId}:`, updateErr);
+            logger.error("Failed to update error status", { sheetId, err: String(updateErr) });
           }
         });
 
@@ -241,7 +242,7 @@ export const appRouter = router({
           enqueueMidiRegeneration(sheet.userId, input.id, sheet.musicxmlKey, input.voiceAssignments)
             .then(() => updateSheetMusic(input.id, { status: "ready" }))
             .catch(async (err) => {
-              console.error(`Failed to regenerate MIDI for ${input.id}:`, err);
+              logger.error("Failed to regenerate MIDI", { sheetId: input.id, err: String(err) });
               await updateSheetMusic(input.id, {
                 status: "error",
                 errorMessage: err instanceof Error ? err.message : "MIDI regeneration failed",
@@ -308,7 +309,7 @@ export const appRouter = router({
         if (sheet.originalFileKey) {
           deletePromises.push(
             storageDelete(sheet.originalFileKey).catch(err => {
-              console.error(`Failed to delete original file ${sheet.originalFileKey}:`, err);
+              logger.warn("Failed to delete original file", { key: sheet.originalFileKey, err: String(err) });
             })
           );
         }
@@ -316,7 +317,7 @@ export const appRouter = router({
         if (sheet.musicxmlKey) {
           deletePromises.push(
             storageDelete(sheet.musicxmlKey).catch(err => {
-              console.error(`Failed to delete musicxml ${sheet.musicxmlKey}:`, err);
+              logger.warn("Failed to delete musicxml", { key: sheet.musicxmlKey, err: String(err) });
             })
           );
         }
@@ -328,7 +329,7 @@ export const appRouter = router({
             if (midiKey) {
               deletePromises.push(
                 storageDelete(midiKey).catch(err => {
-                  console.error(`Failed to delete midi file ${midiKey}:`, err);
+                  logger.warn("Failed to delete midi file", { key: midiKey, err: String(err) });
                 })
               );
             }
@@ -392,14 +393,14 @@ export const appRouter = router({
 
         // B-14: pass userId directly — no extra DB round-trip needed
         processSheetMusicAsync(input.id, sheet.userId, fileBuffer, sheet.fileType).catch(async err => {
-          console.error(`Failed to retry processing sheet music ${input.id}:`, err);
+          logger.error("Failed to retry processing", { sheetId: input.id, err: String(err) });
           try {
             await updateSheetMusic(input.id, {
               status: "error",
               errorMessage: err.message,
             });
           } catch (updateErr) {
-            console.error(`Failed to update error status for sheet music ${input.id}:`, updateErr);
+            logger.error("Failed to update error status on retry", { sheetId: input.id, err: String(updateErr) });
           }
         });
 
@@ -531,7 +532,7 @@ async function processSheetMusicAsync(
     await updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
 
   } catch (error) {
-    console.error("Processing error:", error);
+    logger.error("Sheet processing pipeline failed", { sheetId, err: String(error) });
     await updateSheetMusic(sheetId, {
       status: "error",
       errorMessage: error instanceof Error ? error.message : "Unknown error",
@@ -557,12 +558,14 @@ function enqueueMidiRegeneration(
 
   midiGenerationLocks.set(sheetId, next);
 
-  // Clean up the map entry when this promise settles (if it's still the latest)
+  // Clean up the map entry when this promise settles (if it's still the latest).
+  // .catch() suppresses the rejection propagated through .finally() so it doesn't
+  // surface as an additional unhandled rejection when the task throws.
   next.finally(() => {
     if (midiGenerationLocks.get(sheetId) === next) {
       midiGenerationLocks.delete(sheetId);
     }
-  });
+  }).catch(() => {});
 
   return next;
 }
@@ -583,7 +586,7 @@ async function regenerateMidiAsync(
 
     // Cancel if voice assignments changed since this regeneration was triggered
     if (JSON.stringify(currentSheet.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
-      console.log(`MIDI regeneration for ${sheetId} cancelled - voice assignments have changed`);
+      logger.info("MIDI regeneration cancelled: voice assignments changed", { sheetId });
       return;
     }
 
@@ -637,7 +640,7 @@ async function regenerateMidiAsync(
     }
 
     if (JSON.stringify(sheetAfterProcessing.voiceAssignments) !== JSON.stringify(voiceAssignments)) {
-      console.log(`MIDI regeneration for ${sheetId} cancelled after processing - voice assignments have changed`);
+      logger.info("MIDI regeneration cancelled after processing: voice assignments changed", { sheetId });
       return;
     }
 
@@ -658,7 +661,7 @@ async function regenerateMidiAsync(
     });
 
   } catch (error) {
-    console.error("MIDI generation error:", error);
+    logger.error("MIDI generation failed", { sheetId, err: String(error) });
     throw error;
   }
 }

@@ -43,9 +43,6 @@ apt-get install -y mysql-server
 systemctl start mysql
 systemctl enable mysql
 
-echo -e "${GREEN}Step 8: Installing additional dependencies for OMR...${NC}"
-apt-get install -y poppler-utils
-
 echo -e "${YELLOW}=========================================="
 echo "System setup complete!"
 echo "==========================================${NC}"

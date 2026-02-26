@@ -21,11 +21,11 @@ FROM node:22-slim AS backend
 
 WORKDIR /app
 
-# Install Python 3 and system dependencies (poppler-utils for pdf2image)
+# Install Python 3. No system-level OMR dependencies needed —
+# PDF rendering is handled by PyMuPDF (bundled, no external binaries).
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
-    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -53,6 +53,10 @@ COPY --from=frontend-builder /app/dist ./dist
 EXPOSE 3000
 EXPOSE 8001
 
-# B-06: Background BOTH processes so `wait` blocks until either exits.
-# `wait -n` (bash-only) is avoided because node:22-slim uses dash as /bin/sh.
-CMD ["sh", "-c", "node dist/index.js & python3 python_service/music_processor.py & wait"]
+# Copy and enable the entrypoint script that supervises both processes.
+# If either the Node server or the Python service crashes, the other is stopped
+# and the container exits — allowing Docker (or the orchestrator) to restart it.
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+CMD ["/docker-entrypoint.sh"]
