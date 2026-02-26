@@ -166,9 +166,9 @@ class MusicProcessor:
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
             page_note = (
-                f"This score spans {len(images)} page(s) — all pages are provided in order."
+                f"This score spans {len(jpeg_pages)} page(s) — all pages are provided in order."
                 if total_pages <= PDF_MAX_PAGES else
-                f"The first {len(images)} of {total_pages} pages are provided in order."
+                f"The first {len(jpeg_pages)} of {total_pages} pages are provided in order."
             )
 
             prompt = f"""You are an expert music engraver and SATB choral score transcriber.
