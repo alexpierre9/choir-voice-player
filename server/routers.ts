@@ -16,6 +16,10 @@ import {
   getUserSheetMusic,
   deleteSheetMusic,
   upsertUser,
+  getAppSetting,
+  setAppSetting,
+  deleteAppSetting,
+  getAppSettings,
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-active";
 import FormData from "form-data";
@@ -343,7 +347,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // Retry failed processing
+    // Retry failed processing (resets to the beginning of the pipeline)
     retry: protectedProcedure
       .input(z.object({ id: z.string().min(1).max(64) })) // B-09
       .mutation(async ({ ctx, input }) => {
@@ -407,6 +411,108 @@ export const appRouter = router({
         return { success: true };
       }),
   }),
+
+  settings: router({
+    getGeminiConfig: protectedProcedure.query(async () => {
+      const settings = await getAppSettings([
+        "gemini_api_key",
+        "gemini_model_name",
+        "gemini_max_output_tokens",
+      ]);
+
+      const dbKeySet = !!settings.gemini_api_key;
+      const envKeySet = !!process.env.GEMINI_API_KEY;
+
+      return {
+        apiKeySet: dbKeySet || envKeySet,
+        apiKeySource: dbKeySet ? "database" as const : envKeySet ? "environment" as const : "none" as const,
+        modelName: settings.gemini_model_name || process.env.GEMINI_MODEL_NAME || "gemini-2.0-flash",
+        maxOutputTokens: settings.gemini_max_output_tokens
+          ? parseInt(settings.gemini_max_output_tokens, 10)
+          : parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS || "8192", 10),
+      };
+    }),
+
+    updateGeminiConfig: protectedProcedure
+      .input(z.object({
+        apiKey: z.string().optional(),
+        modelName: z.string().trim().min(1).max(255).optional(),
+        maxOutputTokens: z.number().int().min(1024).max(65536).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const pythonPayload: Record<string, unknown> = {};
+
+        if (input.apiKey !== undefined) {
+          if (input.apiKey === "") {
+            await deleteAppSetting("gemini_api_key");
+            // Revert to env var if present
+            pythonPayload.gemini_api_key = process.env.GEMINI_API_KEY || "";
+          } else {
+            await setAppSetting("gemini_api_key", input.apiKey);
+            pythonPayload.gemini_api_key = input.apiKey;
+          }
+        }
+
+        if (input.modelName !== undefined) {
+          await setAppSetting("gemini_model_name", input.modelName);
+          pythonPayload.gemini_model_name = input.modelName;
+        }
+
+        if (input.maxOutputTokens !== undefined) {
+          await setAppSetting("gemini_max_output_tokens", String(input.maxOutputTokens));
+          pythonPayload.gemini_max_output_tokens = input.maxOutputTokens;
+        }
+
+        // Push updated config to the Python service (best-effort)
+        if (Object.keys(pythonPayload).length > 0) {
+          try {
+            await fetch(`${PYTHON_SERVICE_URL}/api/update-config`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...INTERNAL_TOKEN_HEADER,
+              },
+              body: JSON.stringify(pythonPayload),
+            });
+          } catch (err) {
+            logger.warn("Failed to push config to Python service", { err: String(err) });
+          }
+        }
+
+        return { success: true };
+      }),
+
+    testGeminiConnection: protectedProcedure.mutation(async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const res = await fetch(`${PYTHON_SERVICE_URL}/api/test-gemini`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...INTERNAL_TOKEN_HEADER,
+          },
+          signal: controller.signal as any,
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          const message = parsePythonError(errorText);
+          throw new TRPCError({ code: "BAD_REQUEST", message });
+        }
+
+        const result = await res.json() as { success: boolean; model?: string };
+        return result;
+      } catch (err: any) {
+        if (err instanceof TRPCError) throw err;
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err.message || "Failed to test Gemini connection",
+        });
+      }
+    }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;
@@ -454,6 +560,31 @@ async function checkPythonServiceHealth(): Promise<void> {
   }
 }
 
+/**
+ * Parse a structured error response from the Python service.
+ * Python returns `{"error_category": "...", "error_message": "..."}` as the
+ * HTTPException detail string.  Falls back to the raw text for old-format errors.
+ */
+function parsePythonError(errorText: string): string {
+  try {
+    // FastAPI wraps the detail in a {"detail": "..."} envelope
+    const outer = JSON.parse(errorText);
+    const detail = typeof outer?.detail === "string" ? outer.detail : errorText;
+    const inner = JSON.parse(detail);
+    if (inner?.error_message) return inner.error_message;
+  } catch {
+    // Not JSON or unexpected shape — fall through
+  }
+  // Strip the {"detail": "..."} wrapper if present but not structured
+  try {
+    const outer = JSON.parse(errorText);
+    if (typeof outer?.detail === "string") return outer.detail;
+  } catch {
+    // Not JSON at all
+  }
+  return errorText;
+}
+
 // B-14: userId is now passed as a parameter to avoid a redundant DB round-trip
 // inside the async pipeline (the upload/retry callers already have it).
 async function processSheetMusicAsync(
@@ -493,7 +624,7 @@ async function processSheetMusicAsync(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Python service error: ${errorText}`);
+      throw new Error(parsePythonError(errorText));
     }
 
     const result = await response.json() as {
@@ -621,7 +752,7 @@ async function regenerateMidiAsync(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`MIDI generation error: ${errorText}`);
+      throw new Error(parsePythonError(errorText));
     }
 
     const result = await response.json() as {

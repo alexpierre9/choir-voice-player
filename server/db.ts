@@ -1,6 +1,7 @@
 import { and, desc, eq, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
+import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic, appSettings } from "../drizzle/schema";
+import { inArray } from "drizzle-orm";
 
 const safeUserFields = {
   id: users.id,
@@ -151,6 +152,53 @@ export async function deleteSheetMusic(id: string): Promise<void> {
 
   // B-12: single-statement op — transaction wrapper removed
   await db.delete(sheetMusic).where(eq(sheetMusic.id, id));
+}
+
+// App Settings helpers
+
+export async function getAppSetting(key: string): Promise<string | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  try {
+    const result = await db.select().from(appSettings).where(eq(appSettings.key, key)).limit(1);
+    return result.length > 0 ? result[0].value : undefined;
+  } catch (err: any) {
+    if (err?.errno === 1146 || err?.cause?.errno === 1146) return undefined;
+    throw err;
+  }
+}
+
+export async function setAppSetting(key: string, value: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(appSettings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
+}
+
+export async function deleteAppSetting(key: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(appSettings).where(eq(appSettings.key, key));
+}
+
+export async function getAppSettings(keys: string[]): Promise<Record<string, string>> {
+  const db = await getDb();
+  if (!db) return {};
+  if (keys.length === 0) return {};
+  try {
+    const rows = await db.select().from(appSettings).where(inArray(appSettings.key, keys));
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.key] = row.value;
+    }
+    return result;
+  } catch (err: any) {
+    // MySQL error 1146 = ER_NO_SUCH_TABLE — migration not applied yet
+    if (err?.errno === 1146 || err?.cause?.errno === 1146) {
+      console.warn("[Database] app_settings table not found — run `pnpm db:push` to apply migrations");
+      return {};
+    }
+    throw err;
+  }
 }
 
 /** Mark any sheet stuck in "processing" for more than `thresholdMs` ms as errored. */

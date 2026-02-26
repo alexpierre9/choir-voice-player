@@ -60,3 +60,12 @@ export const sheetMusic = mysqlTable("sheet_music", {
 
 export type SheetMusic = typeof sheetMusic.$inferSelect;
 export type InsertSheetMusic = typeof sheetMusic.$inferInsert;
+
+/**
+ * Key-value settings table for runtime configuration (e.g. Gemini API key).
+ */
+export const appSettings = mysqlTable("app_settings", {
+  key: varchar("key", { length: 255 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+});

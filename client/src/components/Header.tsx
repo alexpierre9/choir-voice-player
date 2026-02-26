@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, Music, LogIn, LogOut } from "lucide-react";
+import { Moon, Sun, Music, LogIn, LogOut, Settings } from "lucide-react";
 import { Link } from "wouter";
 import { useTheme } from "../contexts/ThemeContext";
 import { APP_TITLE } from "@/const";
@@ -44,6 +44,11 @@ export default function Header() {
                     {user.name}
                   </span>
                 )}
+                <Button variant="ghost" size="icon" asChild aria-label="Settings">
+                  <Link href="/settings">
+                    <Settings className="h-4 w-4" />
+                  </Link>
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"

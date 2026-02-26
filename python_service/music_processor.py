@@ -36,19 +36,89 @@ load_dotenv()
 # environment (e.g. from a prior `gcloud` setup), which rejects plain API keys with a 401.
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
 
-# Build Gemini client (lazy: only instantiated if the key is present)
-GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Mutable Gemini configuration — can be updated at runtime via /api/update-config.
+_config: Dict = {
+    "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
+    "gemini_model_name": os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash"),
+    "gemini_max_output_tokens": int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192")),
+    "gemini_timeout_s": int(os.environ.get("GEMINI_TIMEOUT", "120")),
+}
+
 # Timeout for Gemini API calls, in seconds (env var uses human-readable seconds;
 # the google-genai SDK HttpOptions.timeout field is in *milliseconds*).
-_GEMINI_TIMEOUT_S = int(os.environ.get("GEMINI_TIMEOUT", "120"))
 GENAI_CLIENT: "genai.Client | None" = None
-if GENAI_API_KEY:
-    GENAI_CLIENT = genai.Client(
-        api_key=GENAI_API_KEY,
-        http_options={"timeout": _GEMINI_TIMEOUT_S * 1000},  # convert s → ms
-    )
-else:
-    logger.warning("GEMINI_API_KEY not found. PDF OMR will not work.")
+
+
+def _rebuild_genai_client() -> None:
+    """(Re)build the Gemini client from the current _config dict."""
+    global GENAI_CLIENT
+    api_key = _config.get("gemini_api_key", "")
+    if api_key:
+        timeout_s = _config.get("gemini_timeout_s", 120)
+        GENAI_CLIENT = genai.Client(
+            api_key=api_key,
+            http_options={"timeout": timeout_s * 1000},
+        )
+    else:
+        GENAI_CLIENT = None
+        logger.warning("GEMINI_API_KEY not found. PDF OMR will not work.")
+
+
+# Build initial client from environment
+_rebuild_genai_client()
+
+
+def _classify_error(exc: Exception) -> Tuple[str, str]:
+    """Map an exception to (category, safe_message) for structured error responses.
+
+    Strips file paths and internal details from the message while preserving
+    enough information for the user to understand what went wrong.
+    """
+    msg = str(exc)
+
+    # API key / auth issues
+    if any(kw in msg.lower() for kw in ["api key", "api_key", "invalid key", "api_key_invalid",
+                                         "permission denied", "403", "401", "unauthorized",
+                                         "authentication"]):
+        return ("api_key", "Gemini API key is invalid or expired. Check your API key in Settings.")
+
+    # Quota / rate limit
+    if any(kw in msg.lower() for kw in ["quota", "rate limit", "resource exhausted", "429",
+                                         "too many requests"]):
+        return ("quota", "Gemini API quota exceeded. Please wait a few minutes and try again.")
+
+    # Model not found
+    if any(kw in msg.lower() for kw in ["model not found", "not found", "404"]) and "model" in msg.lower():
+        return ("model", f"Gemini model not found. Check the model name in Settings.")
+
+    # Output truncation
+    if "max_tokens" in msg.lower() or "truncated" in msg.lower():
+        return ("truncation", "The score is too large for the model's output limit. Try fewer pages.")
+
+    # MusicXML parse failures
+    if any(kw in msg.lower() for kw in ["musicxml is invalid", "invalid xml", "parse error",
+                                         "xml syntax"]):
+        return ("parse", "The generated MusicXML could not be parsed. The score may be too complex for AI transcription.")
+
+    # Gemini didn't return valid XML
+    if "did not return valid xml" in msg.lower():
+        return ("parse", "Gemini did not return valid sheet music data. Try uploading a clearer scan.")
+
+    # Network / timeout
+    if any(kw in msg.lower() for kw in ["timeout", "timed out", "deadline exceeded",
+                                         "connection error", "connection refused"]):
+        return ("network", "Request timed out. The service may be overloaded — try again shortly.")
+
+    # GEMINI_API_KEY not set
+    if "gemini_api_key is not set" in msg.lower():
+        return ("api_key", "Gemini API key is not configured. Add it in Settings.")
+
+    # Strip file paths from unknown errors for safety
+    safe_msg = re.sub(r'[A-Za-z]:\\[^\s:]+|/[^\s:]+/', '', msg).strip()
+    if not safe_msg:
+        safe_msg = "An unexpected error occurred."
+
+    return ("unknown", safe_msg)
 
 # Maximum number of PDF pages to send to Gemini in one request.
 # Large PDFs risk hitting token limits and timeouts.
@@ -163,8 +233,8 @@ class MusicProcessor:
         )
 
         try:
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
-            max_output_tokens = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
+            model_name = _config.get("gemini_model_name", "gemini-2.0-flash")
+            max_output_tokens = int(_config.get("gemini_max_output_tokens", 8192))
 
             # Retry with progressively fewer pages if Gemini truncates its output
             # (finish_reason == MAX_TOKENS). Attempts: all pages → N//2 → 1.
@@ -752,7 +822,7 @@ The tenor sounds ONE OCTAVE LOWER than written when using the octave treble clef
             return instrument.Vocalist()
 
 # FastAPI endpoints
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends, Header
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -831,8 +901,12 @@ async def process_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error processing PDF: %s", e)
-        raise HTTPException(500, "Processing failed. Please try again later.")
+        logger.error("Error processing PDF: %s", e, exc_info=True)
+        category, safe_message = _classify_error(e)
+        raise HTTPException(500, detail=json.dumps({
+            "error_category": category,
+            "error_message": safe_message,
+        }))
 
 
 @app.post("/api/process-musicxml")
@@ -878,8 +952,12 @@ async def process_musicxml(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error processing MusicXML: %s", e)
-        raise HTTPException(500, "Analysis failed. Please try again later.")
+        logger.error("Error processing MusicXML: %s", e, exc_info=True)
+        category, safe_message = _classify_error(e)
+        raise HTTPException(500, detail=json.dumps({
+            "error_category": category,
+            "error_message": safe_message,
+        }))
 
 
 @app.post("/api/generate-midi")
@@ -933,20 +1011,79 @@ async def generate_midi(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error generating MIDI: %s", e)
-        raise HTTPException(500, "MIDI generation failed. Please try again later.")
+        logger.error("Error generating MIDI: %s", e, exc_info=True)
+        category, safe_message = _classify_error(e)
+        raise HTTPException(500, detail=json.dumps({
+            "error_category": category,
+            "error_message": safe_message,
+        }))
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint — intentionally unauthenticated so the Node.js
     server can probe it without needing to set up auth headers."""
-    gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
+    gemini_configured = bool(_config.get("gemini_api_key"))
 
     return {
         "status": "healthy",
         "gemini_configured": gemini_configured,
     }
+
+
+@app.post("/api/update-config")
+async def update_config(
+    request: Request,
+    _: None = Depends(verify_internal_token),
+):
+    """Update Gemini runtime configuration without restarting.
+
+    Accepts JSON body with optional keys: gemini_api_key, gemini_model_name,
+    gemini_max_output_tokens. Only provided keys are updated.
+    """
+    body = await request.json()
+
+    if "gemini_api_key" in body and isinstance(body["gemini_api_key"], str):
+        _config["gemini_api_key"] = body["gemini_api_key"]
+    if "gemini_model_name" in body and isinstance(body["gemini_model_name"], str):
+        _config["gemini_model_name"] = body["gemini_model_name"]
+    if "gemini_max_output_tokens" in body:
+        try:
+            _config["gemini_max_output_tokens"] = int(body["gemini_max_output_tokens"])
+        except (ValueError, TypeError):
+            pass
+
+    _rebuild_genai_client()
+    logger.info("Gemini config updated at runtime (key=%s, model=%s, tokens=%s)",
+                "***" if _config.get("gemini_api_key") else "<unset>",
+                _config.get("gemini_model_name"),
+                _config.get("gemini_max_output_tokens"))
+
+    return {"success": True}
+
+
+@app.post("/api/test-gemini")
+async def test_gemini(
+    _: None = Depends(verify_internal_token),
+):
+    """Test that the current Gemini API key and model are valid."""
+    if not GENAI_CLIENT:
+        raise HTTPException(400, detail="Gemini API key is not configured.")
+
+    try:
+        model_name = _config.get("gemini_model_name", "gemini-2.0-flash")
+        model_info = GENAI_CLIENT.models.get(model=model_name)
+        return {
+            "success": True,
+            "model": model_info.name if hasattr(model_info, "name") else model_name,
+        }
+    except Exception as e:
+        logger.error("Gemini connection test failed: %s", e, exc_info=True)
+        category, safe_message = _classify_error(e)
+        raise HTTPException(400, detail=json.dumps({
+            "error_category": category,
+            "error_message": safe_message,
+        }))
 
 
 if __name__ == "__main__":

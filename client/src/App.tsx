@@ -8,6 +8,7 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Upload from "./pages/Upload";
 import SheetDetail from "./pages/SheetDetail";
+import Settings from "./pages/Settings";
 
 function Router() {
   return (
@@ -16,6 +17,7 @@ function Router() {
       <Route path={"/login"} component={Login} />
       <Route path={"/upload"} component={Upload} />
       <Route path={"/sheet/:id"} component={SheetDetail} />
+      <Route path={"/settings"} component={Settings} />
       <Route path={"/404"} component={NotFound} />
       <Route component={NotFound} />
     </Switch>

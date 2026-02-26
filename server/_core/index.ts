@@ -10,9 +10,10 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
-import { markStaleProcessingSheets } from "../db";
-import { validateEnv } from "./env";
+import { markStaleProcessingSheets, getAppSettings } from "../db";
+import { validateEnv, ENV } from "./env";
 import { logger } from "./logger";
+import fetch from "node-fetch";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,6 +32,39 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
     }
   }
   throw new Error(`No available port found starting from ${startPort}`);
+}
+
+const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
+
+async function syncGeminiConfigToPython(): Promise<void> {
+  const settings = await getAppSettings([
+    "gemini_api_key",
+    "gemini_model_name",
+    "gemini_max_output_tokens",
+  ]);
+
+  const payload: Record<string, unknown> = {};
+  if (settings.gemini_api_key) payload.gemini_api_key = settings.gemini_api_key;
+  if (settings.gemini_model_name) payload.gemini_model_name = settings.gemini_model_name;
+  if (settings.gemini_max_output_tokens) payload.gemini_max_output_tokens = parseInt(settings.gemini_max_output_tokens, 10);
+
+  if (Object.keys(payload).length === 0) return;
+
+  const tokenHeader: Record<string, string> = ENV.internalServiceToken
+    ? { "X-Internal-Token": ENV.internalServiceToken }
+    : {};
+
+  const res = await fetch(`${PYTHON_SERVICE_URL}/api/update-config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...tokenHeader },
+    body: JSON.stringify(payload),
+  });
+
+  if (res.ok) {
+    logger.info("Synced DB-stored Gemini config to Python service");
+  } else {
+    logger.warn("Failed to sync Gemini config to Python service", { status: res.status });
+  }
 }
 
 async function startServer() {
@@ -154,6 +188,10 @@ async function startServer() {
       logger.warn(`Marked stale processing sheets as error`, { count });
     }
   }).catch(() => {});
+
+  // On startup: push any DB-stored Gemini settings to the Python service
+  // so it picks up configuration changes that were saved while it was down.
+  syncGeminiConfigToPython().catch(() => {});
 
   // Periodic sweep every 5 minutes
   setInterval(() => {
