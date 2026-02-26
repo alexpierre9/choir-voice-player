@@ -33,13 +33,14 @@ load_dotenv()
 
 # Build Gemini client (lazy: only instantiated if the key is present)
 GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
-# Explicit 120 s timeout prevents Gemini calls from hanging on large PDFs.
-_GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", "120"))
+# Timeout for Gemini API calls, in seconds (env var uses human-readable seconds;
+# the google-genai SDK HttpOptions.timeout field is in *milliseconds*).
+_GEMINI_TIMEOUT_S = int(os.environ.get("GEMINI_TIMEOUT", "120"))
 GENAI_CLIENT: "genai.Client | None" = None
 if GENAI_API_KEY:
     GENAI_CLIENT = genai.Client(
         api_key=GENAI_API_KEY,
-        http_options={"timeout": _GEMINI_TIMEOUT},
+        http_options={"timeout": _GEMINI_TIMEOUT_S * 1000},  # convert s → ms
     )
 else:
     logger.warning("GEMINI_API_KEY not found. PDF OMR will not work.")
@@ -125,7 +126,9 @@ class MusicProcessor:
             raise RuntimeError("GEMINI_API_KEY is not set")
 
         # Convert PDF pages to images
-        images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
+        # 150 DPI is sufficient for Gemini Vision OCR and keeps JPEG payloads
+        # small enough to avoid upload timeouts on multi-page scores.
+        images = convert_from_path(pdf_path, dpi=150, poppler_path=POPPLER_PATH)
 
         if not images:
             raise ValueError("Could not extract images from PDF")
