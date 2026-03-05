@@ -273,6 +273,120 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    // Update MusicXML from notation editor and re-analyze
+    updateMusicXML: protectedProcedure
+      .input(z.object({
+        id: z.string().min(1).max(64),
+        musicxml: z.string().min(1),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const sheet = await getSheetMusic(input.id);
+
+        if (!sheet) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sheet not found" });
+        }
+        if (sheet.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not your sheet" });
+        }
+
+        const sheetId = input.id;
+        const userId = ctx.user.id;
+
+        // Store updated MusicXML
+        const musicxmlKey = `sheet-music/${userId}/${sheetId}/score.musicxml`;
+        const musicxmlBuffer = Buffer.from(input.musicxml, "utf-8");
+        await storagePut(musicxmlKey, musicxmlBuffer, "application/xml");
+
+        // Set status to processing
+        emitProcessingEvent(sheetId, "processing_step", { step: "Re-analyzing edited score..." });
+
+        await updateSheetMusic(sheetId, {
+          status: "processing",
+          musicxmlKey,
+          errorMessage: null,
+          midiFileKeys: null,
+        });
+
+        // Re-analyze via Python service
+        const formData = new FormData();
+        formData.append("file", musicxmlBuffer, {
+          filename: "score.musicxml",
+          contentType: "application/xml",
+        });
+
+        const pyUrl = `${PYTHON_SERVICE_URL}/api/process-musicxml`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60_000);
+        const startTime = Date.now();
+        const pyRes = await fetch(pyUrl, {
+          method: "POST",
+          body: formData as any,
+          headers: {
+            ...formData.getHeaders(),
+            ...INTERNAL_TOKEN_HEADER,
+          },
+          signal: controller.signal as any,
+        });
+        clearTimeout(timeoutId);
+        logger.info("Python service call (updateMusicXML)", {
+          endpoint: "/api/process-musicxml",
+          durationMs: Date.now() - startTime,
+          status: pyRes.status,
+        });
+
+        if (!pyRes.ok) {
+          const errorText = await pyRes.text();
+          const errMsg = parsePythonError(errorText);
+          await updateSheetMusic(sheetId, { status: "error", errorMessage: errMsg });
+          emitProcessingEvent(sheetId, "status_changed", { status: "error", errorMessage: errMsg });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: errMsg });
+        }
+
+        const result = await pyRes.json() as {
+          success: boolean;
+          analysis: any;
+          warnings?: string[];
+        };
+        const analysis = result.analysis;
+
+        // Update voice assignments from re-analysis
+        const voiceAssignments: Record<string, string> = {};
+        if (analysis?.parts) {
+          for (const part of analysis.parts) {
+            voiceAssignments[String(part.index)] = part.detected_voice || "other";
+          }
+        }
+
+        await updateSheetMusic(sheetId, {
+          musicxmlKey,
+          analysisResult: { ...analysis, warnings: result.warnings || [] },
+          voiceAssignments,
+          errorMessage: "Generating MIDI files…",
+        });
+
+        // Regenerate MIDI
+        emitProcessingEvent(sheetId, "processing_step", { step: "Generating MIDI files..." });
+
+        enqueueMidiRegeneration(userId, sheetId, musicxmlKey, voiceAssignments)
+          .then(() => {
+            updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
+            emitProcessingEvent(sheetId, "status_changed", { status: "ready" });
+          })
+          .catch(async (err) => {
+            logger.error("Failed to regenerate MIDI after MusicXML update", { sheetId, err: String(err) });
+            await updateSheetMusic(sheetId, {
+              status: "error",
+              errorMessage: err instanceof Error ? err.message : "MIDI regeneration failed",
+            }).catch(() => {});
+            emitProcessingEvent(sheetId, "status_changed", {
+              status: "error",
+              errorMessage: err instanceof Error ? err.message : "MIDI regeneration failed",
+            });
+          });
+
+        return { success: true };
+      }),
+
     // Get MIDI file URL
     getMidiUrl: protectedProcedure
       .input(z.object({
