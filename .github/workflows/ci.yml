@@ -29,6 +29,9 @@ jobs:
       - name: TypeScript type check
         run: pnpm check
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Build
         run: pnpm build
 
