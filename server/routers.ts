@@ -242,6 +242,13 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
 
+        logger.info("Voice assignments updated", {
+          sheetId: input.id,
+          userId: ctx.user.id,
+          oldAssignments: sheet.voiceAssignments,
+          newAssignments: input.voiceAssignments,
+        });
+
         // Update voice assignments, set status back to processing, clear stale MIDI keys
         await updateSheetMusic(input.id, {
           voiceAssignments: input.voiceAssignments as any,
