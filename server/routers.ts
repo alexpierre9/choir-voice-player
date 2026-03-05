@@ -631,10 +631,15 @@ async function processSheetMusicAsync(
       success: boolean;
       musicxml: string;
       analysis: any;
+      warnings?: string[];
     };
 
     if (!result.success) {
       throw new Error("Processing failed");
+    }
+
+    if (result.warnings?.length) {
+      result.analysis.warnings = result.warnings;
     }
 
     await updateSheetMusic(sheetId, { errorMessage: "Storing score…" });

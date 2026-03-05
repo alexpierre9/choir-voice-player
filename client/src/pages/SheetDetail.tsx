@@ -344,6 +344,16 @@ export default function SheetDetail() {
         {/* Voice Assignment */}
         {sheet.status === "ready" && analysis && (
           <>
+            {analysis?.warnings?.length > 0 && (
+              <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-400">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                <div className="text-sm">
+                  {analysis.warnings.map((w: string, i: number) => (
+                    <p key={i}>{w}</p>
+                  ))}
+                </div>
+              </div>
+            )}
             <Card className="p-6">
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2 flex-wrap">

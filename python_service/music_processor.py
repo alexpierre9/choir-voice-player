@@ -889,11 +889,19 @@ async def process_pdf(
             pdf_path = os.path.join(processor.temp_dir, "input.pdf")
             with open(pdf_path, 'wb') as f:
                 f.write(file_content)
+
+            warnings = []
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
+            if total_pages > PDF_MAX_PAGES:
+                warnings.append(f"PDF has {total_pages} pages; only the first {PDF_MAX_PAGES} were processed.")
+
             musicxml_path = processor.process_pdf(pdf_path)
             analysis = processor.analyze_musicxml(musicxml_path)
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
-            return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
+            return {"success": True, "musicxml": musicxml_content, "analysis": analysis, "warnings": warnings}
 
     try:
         result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=180)
