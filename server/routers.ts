@@ -671,7 +671,7 @@ async function processSheetMusicAsync(
     // Fail fast if the Python service is unreachable
     await checkPythonServiceHealth();
 
-    const stepMsg = fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…";
+    const stepMsg = fileType === "pdf" ? "Running Audiveris OMR..." : "Parsing score…";
     emitProcessingEvent(sheetId, "processing_step", { step: stepMsg });
 
     await updateSheetMusic(sheetId, {
