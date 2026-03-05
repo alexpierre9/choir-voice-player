@@ -1014,7 +1014,14 @@ async def generate_midi(
             midi_data = {}
             for voice_type, midi_path in midi_files.items():
                 with open(midi_path, 'rb') as f:
-                    midi_data[voice_type] = base64.b64encode(f.read()).decode('utf-8')
+                    content = f.read()
+                if len(content) == 0:
+                    logger.warning("Empty MIDI file generated for voice: %s", voice_type)
+                    continue
+                midi_data[voice_type] = base64.b64encode(content).decode('utf-8')
+
+            if not midi_data:
+                raise Exception("No MIDI data could be generated from the score.")
             return {"success": True, "midi_files": midi_data}
 
     try:
