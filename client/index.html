@@ -4,8 +4,6 @@
     <meta charset="UTF-8" />
     <!-- F-03: removed maximum-scale=1 (WCAG 1.4.4 – users must be able to zoom) -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/png" href="%VITE_APP_LOGO%" />
-    <link rel="apple-touch-icon" href="%VITE_APP_LOGO%" />
     <title>%VITE_APP_TITLE%</title>
     <!-- F-10: apply stored theme before first paint to prevent flash of default theme -->
     <script>
@@ -15,17 +13,38 @@
         if (s === 'dark' || (!s && d)) document.documentElement.classList.add('dark');
       } catch (e) {}
     </script>
+    <!-- Set favicon/touch-icon only when VITE_APP_LOGO is actually configured.
+         Vite 5.2+ leaves %VITE_XXX% unreplaced (rather than replacing with "")
+         when the variable is not defined, so we guard with a % prefix check. -->
+    <script>
+      (function () {
+        var logo = "%VITE_APP_LOGO%";
+        if (logo && logo.charAt(0) !== '%') {
+          var icon = document.createElement('link');
+          icon.rel = 'icon';
+          icon.type = 'image/png';
+          icon.href = logo;
+          document.head.appendChild(icon);
+          var apple = document.createElement('link');
+          apple.rel = 'apple-touch-icon';
+          apple.href = logo;
+          document.head.appendChild(apple);
+        }
+      })();
+    </script>
+    <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
   </head>
 
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <!-- F-11: only inject analytics script when VITE_ANALYTICS_ENDPOINT is configured;
-         without this guard Vite replaces the var with "" producing src="/umami" -->
+    <!-- F-11: only inject analytics script when VITE_ANALYTICS_ENDPOINT is configured.
+         Guard uses charAt(0) !== '%' because Vite 5.2+ leaves the placeholder unreplaced
+         (instead of replacing with "") when the variable is not defined. -->
     <script>
       (function () {
         var ep = "%VITE_ANALYTICS_ENDPOINT%";
-        if (ep) {
+        if (ep && ep.charAt(0) !== '%') {
           var el = document.createElement("script");
           el.defer = true;
           el.src = ep + "/umami";
