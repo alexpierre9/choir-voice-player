@@ -896,8 +896,14 @@ async def process_pdf(
             return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=180)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
@@ -947,8 +953,14 @@ async def process_musicxml(
             return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=120)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
@@ -1006,8 +1018,14 @@ async def generate_midi(
             return {"success": True, "midi_files": midi_data}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=60)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
