@@ -212,3 +212,11 @@
     }
   }
 }
+
+/* Notation editor: selected note highlight */
+.note-selected {
+  filter: drop-shadow(0 0 4px oklch(0.546 0.245 262));
+}
+.note-selected path {
+  fill: oklch(0.546 0.245 262);
+}
