@@ -4,7 +4,8 @@ import { Card } from "@/components/ui/card";
 import Header from "@/components/Header";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload as UploadIcon, FileMusic, Loader2 } from "lucide-react";
+import { Upload as UploadIcon, FileMusic, FileText, FileCode, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -183,9 +184,20 @@ export default function Upload() {
                   <FileMusic className="mx-auto h-16 w-16 text-blue-500" />
                   <div>
                     <p className="text-lg font-medium">{selectedFile.name}</p>
-                    <p className="text-sm text-gray-500">
-                      {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
+                    <div className="flex items-center justify-center gap-2 mt-1">
+                      {getFileType(selectedFile.name) === "pdf" ? (
+                        <Badge variant="secondary" className="flex items-center gap-1">
+                          <FileText className="h-3 w-3" /> PDF
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="flex items-center gap-1">
+                          <FileCode className="h-3 w-3" /> MusicXML
+                        </Badge>
+                      )}
+                      <span className="text-sm text-muted-foreground">
+                        {(selectedFile.size / 1024 / 1024).toFixed(1)} MB
+                      </span>
+                    </div>
                   </div>
                   <Button
                     variant="outline"
