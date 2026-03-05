@@ -13,6 +13,7 @@ import { createFileServerHandler } from "../storage-local";
 import { markStaleProcessingSheets, getAppSettings } from "../db";
 import { validateEnv, ENV } from "./env";
 import { logger } from "./logger";
+import { sseRouter } from "../sse";
 import fetch from "node-fetch";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -154,6 +155,9 @@ async function startServer() {
 
   // Static file serving for uploaded files (MIDI, PDFs, etc.)
   app.use("/files", createFileServerHandler());
+
+  // SSE endpoint for real-time processing status updates
+  app.use(sseRouter);
 
   // tRPC API
   app.use(

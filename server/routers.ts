@@ -22,6 +22,7 @@ import {
   getAppSettings,
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-active";
+import { emitProcessingEvent } from "./sse";
 import FormData from "form-data";
 import fetch from "node-fetch";
 import fs from "fs/promises";
@@ -135,6 +136,14 @@ export const appRouter = router({
           });
         }
 
+        logger.info("Sheet music upload", {
+          sheetId,
+          userId,
+          filename: input.filename,
+          fileType: input.fileType,
+          sizeBytes: fileBuffer.length,
+        });
+
         // Save original file to local storage
         const fileExtension = input.fileType === "pdf" ? "pdf" : "musicxml";
         const originalFileKey = `sheet-music/${userId}/${sheetId}/original.${fileExtension}`;
@@ -233,6 +242,13 @@ export const appRouter = router({
         if (sheet.userId !== ctx.user.id) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
         }
+
+        logger.info("Voice assignments updated", {
+          sheetId: input.id,
+          userId: ctx.user.id,
+          oldAssignments: sheet.voiceAssignments,
+          newAssignments: input.voiceAssignments,
+        });
 
         // Update voice assignments, set status back to processing, clear stale MIDI keys
         await updateSheetMusic(input.id, {
@@ -345,6 +361,64 @@ export const appRouter = router({
         await deleteSheetMusic(input.id);
 
         return { success: true };
+      }),
+
+    // Bulk delete sheet music
+    deleteMany: protectedProcedure
+      .input(
+        z.object({
+          ids: z.array(z.string().min(1).max(64)).min(1).max(50),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const results = await Promise.allSettled(
+          input.ids.map(async (id) => {
+            const sheet = await getSheetMusic(id);
+            if (!sheet || sheet.userId !== ctx.user.id) return;
+
+            const deletePromises: Promise<void>[] = [];
+            if (sheet.originalFileKey) {
+              deletePromises.push(
+                storageDelete(sheet.originalFileKey).catch((err) => {
+                  logger.warn("Failed to delete original file", {
+                    key: sheet.originalFileKey,
+                    err: String(err),
+                  });
+                }),
+              );
+            }
+            if (sheet.musicxmlKey) {
+              deletePromises.push(
+                storageDelete(sheet.musicxmlKey).catch((err) => {
+                  logger.warn("Failed to delete musicxml", {
+                    key: sheet.musicxmlKey,
+                    err: String(err),
+                  });
+                }),
+              );
+            }
+            if (sheet.midiFileKeys) {
+              const midiKeys = sheet.midiFileKeys as Record<string, string>;
+              for (const key of Object.values(midiKeys)) {
+                if (key) {
+                  deletePromises.push(
+                    storageDelete(key).catch((err) => {
+                      logger.warn("Failed to delete midi file", {
+                        key,
+                        err: String(err),
+                      });
+                    }),
+                  );
+                }
+              }
+            }
+            await Promise.all(deletePromises);
+            await deleteSheetMusic(id);
+          }),
+        );
+
+        const deleted = results.filter((r) => r.status === "fulfilled").length;
+        return { deleted, total: input.ids.length };
       }),
 
     // Retry failed processing (resets to the beginning of the pipeline)
@@ -554,7 +628,7 @@ async function checkPythonServiceHealth(): Promise<void> {
       msg = `Python processing service health check failed: ${err.message}`;
     }
     _healthCache = { ok: false, error: msg, expiresAt: Date.now() + 5_000 };
-    throw new Error(msg);
+    throw new Error(msg, { cause: err });
   } finally {
     clearTimeout(timeoutId);
   }
@@ -597,8 +671,11 @@ async function processSheetMusicAsync(
     // Fail fast if the Python service is unreachable
     await checkPythonServiceHealth();
 
+    const stepMsg = fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…";
+    emitProcessingEvent(sheetId, "processing_step", { step: stepMsg });
+
     await updateSheetMusic(sheetId, {
-      errorMessage: fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…",
+      errorMessage: stepMsg,
     });
 
     // Call Python service
@@ -611,6 +688,7 @@ async function processSheetMusicAsync(
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 150000); // 150 s (> Gemini's 120 s timeout + overhead)
+    const fetchStart = Date.now();
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
@@ -621,6 +699,12 @@ async function processSheetMusicAsync(
       signal: controller.signal as any,
     });
     clearTimeout(timeoutId);
+    logger.info("Python service responded", {
+      sheetId,
+      endpoint,
+      durationMs: Date.now() - fetchStart,
+      status: response.status,
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -631,12 +715,18 @@ async function processSheetMusicAsync(
       success: boolean;
       musicxml: string;
       analysis: any;
+      warnings?: string[];
     };
 
     if (!result.success) {
       throw new Error("Processing failed");
     }
 
+    if (result.warnings?.length) {
+      result.analysis.warnings = result.warnings;
+    }
+
+    emitProcessingEvent(sheetId, "processing_step", { step: "Storing score…" });
     await updateSheetMusic(sheetId, { errorMessage: "Storing score…" });
 
     // B-14: use userId parameter directly — no getSheetMusic() call needed
@@ -656,17 +746,24 @@ async function processSheetMusicAsync(
       voiceAssignments,
       errorMessage: "Generating MIDI files…",
     });
+    emitProcessingEvent(sheetId, "processing_step", { step: "Generating MIDI files…" });
 
     // Generate MIDI files, then set status to "ready"
     await enqueueMidiRegeneration(userId, sheetId, musicxmlKey, voiceAssignments);
 
     await updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
+    emitProcessingEvent(sheetId, "status_changed", { status: "ready" });
 
   } catch (error) {
     logger.error("Sheet processing pipeline failed", { sheetId, err: String(error) });
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
     await updateSheetMusic(sheetId, {
       status: "error",
-      errorMessage: error instanceof Error ? error.message : "Unknown error",
+      errorMessage: errorMsg,
+    });
+    emitProcessingEvent(sheetId, "status_changed", {
+      status: "error",
+      errorMessage: errorMsg,
     });
   }
 }
@@ -739,6 +836,7 @@ async function regenerateMidiAsync(
 
     const midiController = new AbortController();
     const midiTimeoutId = setTimeout(() => midiController.abort(), 60000); // 60 s for MIDI generation
+    const midiStart = Date.now();
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
@@ -749,6 +847,11 @@ async function regenerateMidiAsync(
       signal: midiController.signal as any,
     });
     clearTimeout(midiTimeoutId);
+    logger.info("MIDI generation responded", {
+      sheetId,
+      durationMs: Date.now() - midiStart,
+      status: response.status,
+    });
 
     if (!response.ok) {
       const errorText = await response.text();

@@ -34,6 +34,7 @@ export default function SheetDetail() {
   const sheetId = params?.id || "";
   const utils = trpc.useUtils();
 
+  const [processingStep, setProcessingStep] = useState<string | null>(null);
   const [voiceAssignments, setVoiceAssignments] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
@@ -74,6 +75,43 @@ export default function SheetDetail() {
     const interval = setInterval(check, 30_000);
     return () => clearInterval(interval);
   }, [sheet?.status, sheet?.updatedAt]);
+
+  // SSE for real-time processing status updates
+  useEffect(() => {
+    if (sheet?.status !== "processing") {
+      setProcessingStep(null);
+      return;
+    }
+
+    const es = new EventSource(`/api/sse/sheet/${sheetId}`);
+
+    es.addEventListener("processing_step", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setProcessingStep(data.step);
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    es.addEventListener("status_changed", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.status === "ready" || data.status === "error") {
+          refetch();
+        }
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    es.onerror = () => {
+      es.close();
+      // Falls back to existing 3s polling
+    };
+
+    return () => es.close();
+  }, [sheet?.status, sheetId, refetch]);
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -148,29 +186,37 @@ export default function SheetDetail() {
     const loadMidiUrls = async () => {
       if (sheet?.status === "ready" && sheet.midiFileKeys && !isCancelled) {
         const keys = sheet.midiFileKeys as Record<string, string>;
+        const voices = Object.keys(keys);
+
+        const results = await Promise.allSettled(
+          voices.map((voice) =>
+            utils.sheetMusic.getMidiUrl
+              .fetch({ id: sheetId, voice })
+              .then((result) => ({ voice, url: result.url }))
+          )
+        );
+
+        if (isCancelled) return;
+
         const urls: Record<string, string> = {};
+        const failed: string[] = [];
 
-        for (const [voice] of Object.entries(keys)) {
-          if (isCancelled) break;
-
-          try {
-            const result = await utils.sheetMusic.getMidiUrl.fetch({
-              id: sheetId,
-              voice,
-            });
-            if (!isCancelled) {
-              urls[voice] = result.url;
-            }
-          } catch (error) {
-            if (!isCancelled) {
-              console.error(`Failed to load MIDI URL for ${voice}:`, error);
-            }
+        results.forEach((result, i) => {
+          if (result.status === "fulfilled") {
+            urls[result.value.voice] = result.value.url;
+          } else {
+            failed.push(voices[i]);
+            console.error(`Failed to load MIDI URL for ${voices[i]}:`, result.reason);
           }
+        });
+
+        if (failed.length > 0 && failed.length < voices.length) {
+          toast.warning(`Could not load MIDI for: ${failed.join(", ")}`);
+        } else if (failed.length === voices.length) {
+          toast.error("Failed to load all MIDI URLs");
         }
 
-        if (!isCancelled) {
-          setMidiUrls(urls);
-        }
+        setMidiUrls(urls);
       }
     };
 
@@ -291,7 +337,7 @@ export default function SheetDetail() {
               }
               <div className="space-y-1">
                 <p className="font-medium">
-                  {sheet.errorMessage ?? "Processing your sheet music…"}
+                  {processingStep ?? sheet.errorMessage ?? "Processing your sheet music…"}
                 </p>
                 {isStalled ? (
                   <p className="text-sm text-amber-700">
@@ -336,6 +382,16 @@ export default function SheetDetail() {
         {/* Voice Assignment */}
         {sheet.status === "ready" && analysis && (
           <>
+            {analysis?.warnings?.length > 0 && (
+              <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-400">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                <div className="text-sm">
+                  {analysis.warnings.map((w: string, i: number) => (
+                    <p key={i}>{w}</p>
+                  ))}
+                </div>
+              </div>
+            )}
             <Card className="p-6">
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -429,6 +485,7 @@ export default function SheetDetail() {
                 <MidiPlayer
                   midiUrls={midiUrls}
                   availableVoices={availableVoices}
+                  sheetTitle={sheet.title}
                 />
               </div>
             )}

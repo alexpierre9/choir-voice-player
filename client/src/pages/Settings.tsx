@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,12 +22,15 @@ export default function Settings() {
   const [hasEdited, setHasEdited] = useState(false);
 
   // Populate defaults from server config when loaded
-  const initialized = useState(false);
-  if (config && !initialized[0]) {
-    setModelName(config.modelName);
-    setMaxTokens(String(config.maxOutputTokens));
-    initialized[1](true);
-  }
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    if (config && !initialized) {
+      setModelName(config.modelName);
+      setMaxTokens(String(config.maxOutputTokens));
+      setInitialized(true);
+    }
+  }, [config, initialized]);
 
   const updateMutation = trpc.settings.updateGeminiConfig.useMutation({
     onSuccess: () => {

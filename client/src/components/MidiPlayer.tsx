@@ -17,6 +17,11 @@ interface VoiceControl {
 interface MidiPlayerProps {
   midiUrls: Record<string, string>; // { soprano: url, alto: url, ... }
   availableVoices: string[];
+  sheetTitle?: string;
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9\-_ ]/g, "").trim().replace(/\s+/g, "-") || "sheet";
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5] as const;
@@ -31,7 +36,7 @@ const voiceLabels: Record<string, string> = {
   all: "All Voices",
 };
 
-export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProps) {
+export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: MidiPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -294,6 +299,20 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
           }
           return updated;
         });
+      } else if (e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key, 10) - 1;
+        setVoiceControls(prev => {
+          if (idx >= prev.length) return prev;
+          const target = prev[idx];
+          const updated = prev.map((vc, i) => i === idx ? { ...vc, muted: !vc.muted } : vc);
+          const synth = synthsRef.current.get(target.voice);
+          if (synth) {
+            const newMuted = !target.muted;
+            const effectiveMuted = newMuted || (soloVoiceRef.current !== null && soloVoiceRef.current !== target.voice);
+            synth.volume.value = effectiveMuted ? -Infinity : Tone.gainToDb(target.volume);
+          }
+          return updated;
+        });
       }
     };
     window.addEventListener("keydown", handler);
@@ -477,7 +496,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
             return (
               <div
                 key={control.voice}
-                className={`flex items-center gap-3 p-3 border-2 rounded-lg dark:bg-gray-700 ${colors.border}`}
+                className={`flex items-center gap-3 p-3 border-2 rounded-lg dark:bg-gray-700 ${colors.border} ${effectiveMuted ? "opacity-40" : ""}`}
               >
                 <Button
                   variant="ghost"
@@ -497,7 +516,10 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
                   <div className="flex items-center justify-between gap-1">
                     <div className="flex items-center gap-2">
                       <span className={`inline-block w-2 h-2 rounded-full ${colors.dot}`} />
-                      <span className="text-sm font-medium dark:text-gray-200">{control.label}</span>
+                      <span className={`text-sm font-medium dark:text-gray-200 ${effectiveMuted ? "line-through" : ""}`}>{control.label}</span>
+                      <kbd className="ml-1.5 text-[10px] font-mono text-muted-foreground/50 border border-muted-foreground/20 rounded px-1">
+                        {voiceControls.indexOf(control) + 1}
+                      </kbd>
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
@@ -513,7 +535,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
                       {midiUrls[control.voice] && (
                         <a
                           href={midiUrls[control.voice]}
-                          download={`${control.label.toLowerCase()}.mid`}
+                          download={`${sheetTitle ? sanitizeFilename(sheetTitle) + "-" : ""}${control.label.toLowerCase()}.mid`}
                           aria-label={`Download ${control.label} MIDI`}
                         >
                           <Button

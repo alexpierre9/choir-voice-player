@@ -889,15 +889,29 @@ async def process_pdf(
             pdf_path = os.path.join(processor.temp_dir, "input.pdf")
             with open(pdf_path, 'wb') as f:
                 f.write(file_content)
+
+            warnings = []
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
+            if total_pages > PDF_MAX_PAGES:
+                warnings.append(f"PDF has {total_pages} pages; only the first {PDF_MAX_PAGES} were processed.")
+
             musicxml_path = processor.process_pdf(pdf_path)
             analysis = processor.analyze_musicxml(musicxml_path)
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
-            return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
+            return {"success": True, "musicxml": musicxml_content, "analysis": analysis, "warnings": warnings}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=180)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
@@ -947,8 +961,14 @@ async def process_musicxml(
             return {"success": True, "musicxml": musicxml_content, "analysis": analysis}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=120)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
@@ -1002,12 +1022,25 @@ async def generate_midi(
             midi_data = {}
             for voice_type, midi_path in midi_files.items():
                 with open(midi_path, 'rb') as f:
-                    midi_data[voice_type] = base64.b64encode(f.read()).decode('utf-8')
+                    content = f.read()
+                if len(content) == 0:
+                    logger.warning("Empty MIDI file generated for voice: %s", voice_type)
+                    continue
+                midi_data[voice_type] = base64.b64encode(content).decode('utf-8')
+
+            if not midi_data:
+                raise Exception("No MIDI data could be generated from the score.")
             return {"success": True, "midi_files": midi_data}
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=60)
         return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Processing timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Processing timed out. The score may be too complex — try fewer pages.",
+        }))
     except HTTPException:
         raise
     except Exception as e:
@@ -1058,6 +1091,15 @@ async def update_config(
                 "***" if _config.get("gemini_api_key") else "<unset>",
                 _config.get("gemini_model_name"),
                 _config.get("gemini_max_output_tokens"))
+
+    # Validate model name if client is available and model was changed
+    if "gemini_model_name" in body and GENAI_CLIENT:
+        try:
+            GENAI_CLIENT.models.get(model=_config["gemini_model_name"])
+        except Exception as e:
+            logger.warning("Model validation failed for '%s': %s", _config["gemini_model_name"], e)
+            # Don't block the save — just warn via response
+            return {"success": True, "warning": f"Model '{_config['gemini_model_name']}' could not be validated: {str(e)}"}
 
     return {"success": True}
 
