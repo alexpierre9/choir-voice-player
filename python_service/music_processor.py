@@ -1092,6 +1092,15 @@ async def update_config(
                 _config.get("gemini_model_name"),
                 _config.get("gemini_max_output_tokens"))
 
+    # Validate model name if client is available and model was changed
+    if "gemini_model_name" in body and GENAI_CLIENT:
+        try:
+            GENAI_CLIENT.models.get(model=_config["gemini_model_name"])
+        except Exception as e:
+            logger.warning("Model validation failed for '%s': %s", _config["gemini_model_name"], e)
+            # Don't block the save — just warn via response
+            return {"success": True, "warning": f"Model '{_config['gemini_model_name']}' could not be validated: {str(e)}"}
+
     return {"success": True}
 
 
