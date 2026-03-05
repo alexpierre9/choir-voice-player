@@ -2,14 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Prerequisites
+
+Node.js 22+, pnpm 10+, Python 3.11+, MySQL 8.0+ (or Docker).
+
 ## Commands
 
 ```bash
 pnpm install          # Install dependencies
 pnpm dev              # Start dev server (tsx watch, hot reload)
+pnpm dev:python       # Start Python FastAPI service on port 8001
+pnpm setup:python     # Create Python venv and install dependencies
 pnpm build            # Build frontend (Vite) + backend (esbuild) to dist/
 pnpm start            # Run production server
 pnpm check            # TypeScript type checking (tsc --noEmit)
+pnpm lint             # ESLint (typescript-eslint + react-hooks)
 pnpm format           # Format code with Prettier
 pnpm test             # Run tests with Vitest
 pnpm test -- path     # Run a single test file
@@ -24,7 +31,7 @@ Full-stack monorepo for a choir voice separation app: users upload sheet music (
 
 **Client** (`/client/`) — React 19 + Vite 7, Tailwind CSS 4, shadcn/ui, Wouter routing, React Query + tRPC hooks, Tone.js for MIDI playback.
 
-**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with MySQL, JWT session cookies (email+password auth), dual storage adapters (cloud or local filesystem), rate limiting.
+**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with MySQL, JWT session cookies (single-owner passphrase auth), dual storage adapters (cloud or local filesystem), rate limiting.
 
 **Python Service** (`/python_service/`) — FastAPI on port 8001. Handles the music processing pipeline: Gemini Vision for PDF→MusicXML OMR, music21 for MusicXML parsing and voice detection, MIDI file generation per voice part.
 
@@ -52,7 +59,8 @@ Single-owner passphrase auth. Key patterns:
 
 All client-server communication is through tRPC. The router in `server/routers.ts` exposes:
 - `auth.me`, `auth.login`, `auth.logout`
-- `sheetMusic.upload`, `.get`, `.list`, `.rename`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`, `.retry`
+- `sheetMusic.upload`, `.get`, `.list`, `.rename`, `.updateVoiceAssignments`, `.getMidiUrl`, `.delete`, `.deleteMany`, `.retry`
+- `settings.getGeminiConfig`, `.updateGeminiConfig`, `.testGeminiConnection`
 
 Protected procedures enforce authentication via `protectedProcedure` middleware. Rate limits: 100 req/15min general, 10 uploads/15min (skipped in dev).
 
@@ -73,8 +81,18 @@ Protected procedures enforce authentication via `protectedProcedure` middleware.
    - POST /api/process-musicxml → music21 analysis → voice detection
    - POST /api/generate-midi → separate MIDI file per SATB voice
 4. DB updated with analysisResult, voiceAssignments, midiFileKeys (status='ready')
-5. Client polls status; on ready, loads MIDIs via Tone.js for playback
+5. Client receives real-time progress via SSE (GET /api/sse/sheet/:id), falls back to 3s polling
+6. On ready, loads MIDIs via Tone.js for playback
 ```
+
+### Server-Sent Events (SSE)
+
+`server/sse.ts` provides real-time processing updates:
+- `GET /api/sse/sheet/:id` — authenticated SSE endpoint (reads JWT from cookie)
+- `emitProcessingEvent(sheetId, event, data)` — emits events from `processSheetMusicAsync`
+- Events: `processing_step` (step name), `status_changed` (ready/error)
+- In-memory `EventEmitter` keyed by sheetId; 30s heartbeat; auto-cleanup on disconnect
+- Client subscribes via `EventSource` in SheetDetail while status is "processing"
 
 ### Storage
 
@@ -86,7 +104,7 @@ Two adapters both implement `StorageAdapter` (defined in `server/storage-interfa
 
 ### Database
 
-Drizzle ORM with MySQL2 (lazy connection). Two tables: `users` and `sheet_music`. Schema in `drizzle/schema.ts`, migrations in `drizzle/`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys.
+Drizzle ORM with MySQL2 (lazy connection). Three tables: `users`, `sheet_music`, and `app_settings`. Schema in `drizzle/schema.ts`, migrations in `drizzle/`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys. The `app_settings` table stores key-value pairs for server config (e.g., Gemini API key, model name).
 
 ### Path Aliases
 
@@ -99,19 +117,22 @@ Vitest configured for server-side only (`server/**/*.test.ts`, `server/**/*.spec
 
 ## Key Environment Variables
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | MySQL connection string |
-| `JWT_SECRET` | Session cookie signing key |
-| `GEMINI_API_KEY` | Google AI for PDF OMR |
-| `OWNER_OPEN_ID` | User ID designated as admin |
-| `BUILT_IN_FORGE_API_URL` | Cloud storage API |
-| `BUILT_IN_FORGE_API_KEY` | Cloud storage API key |
-| `LOCAL_STORAGE_DIR` | Local FS storage path (VPS) |
-| `PUBLIC_URL_BASE` | Public file serving base (default `/files/`) |
-| `PYTHON_SERVICE_URL` | Python service URL (default `http://localhost:8001`) |
-| `VITE_APP_TITLE` | App display name (default "Choir Voice Player") |
-| `VITE_APP_LOGO` | App logo URL |
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Yes | MySQL connection string |
+| `JWT_SECRET` | Yes | Session cookie signing key |
+| `AUTH_PASSPHRASE` | Yes | Single-owner login passphrase |
+| `GEMINI_API_KEY` | For PDF uploads | Google Gemini Vision API |
+| `INTERNAL_SERVICE_TOKEN` | Recommended in prod | Shared secret between Node and Python service |
+| `OWNER_OPEN_ID` | No | User ID designated as admin |
+| `LOCAL_STORAGE_DIR` | No | Local FS storage path (default `/var/lib/choir-files`) |
+| `PUBLIC_URL_BASE` | No | Public file serving base (default `/files/`) |
+| `PYTHON_SERVICE_URL` | No | Python service URL (default `http://localhost:8001`) |
+| `PORT` | No | HTTP port (default `3000`) |
+| `VITE_APP_TITLE` | No | App display name (default "Choir Voice Player") |
+| `VITE_APP_LOGO` | No | App logo URL |
+| `BUILT_IN_FORGE_API_URL` | No | Cloud storage API (inactive adapter) |
+| `BUILT_IN_FORGE_API_KEY` | No | Cloud storage API key (inactive adapter) |
 
 ## Deployment
 
