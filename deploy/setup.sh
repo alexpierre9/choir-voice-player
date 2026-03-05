@@ -38,25 +38,34 @@ apt-get install -y python3.11 python3.11-venv python3-pip python3.11-dev
 # P-02: Python app packages are installed into the project venv by deploy-app.sh
 # after the repo is cloned. Do NOT install them globally here.
 
-echo -e "${GREEN}Step 6: Installing Java 17 and Audiveris...${NC}"
-apt-get install -y openjdk-17-jre-headless
+# Audiveris OMR engine (bundles its own JRE)
+echo -e "${GREEN}Step 6: Installing Audiveris OMR...${NC}"
+AUDIVERIS_VERSION="5.9.0"
 
-# Download Audiveris release
-AUDIVERIS_VERSION="5.4"
-AUDIVERIS_DIR="/opt/audiveris"
-mkdir -p "$AUDIVERIS_DIR"
-if [ ! -f "$AUDIVERIS_DIR/audiveris.jar" ]; then
-    curl -fsSL "https://github.com/Audiveris/audiveris/releases/download/$AUDIVERIS_VERSION/Audiveris-$AUDIVERIS_VERSION.jar" \
-        -o "$AUDIVERIS_DIR/audiveris.jar"
+# Detect Ubuntu version for correct .deb package
+UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "24.04")
+case "$UBUNTU_VERSION" in
+    24.*) DEB_SUFFIX="ubuntu24.04-x86_64" ;;
+    22.*) DEB_SUFFIX="ubuntu22.04-x86_64" ;;
+    *)    DEB_SUFFIX="ubuntu24.04-x86_64" ;;  # default to latest
+esac
+
+DEB_FILE="Audiveris-${AUDIVERIS_VERSION}-${DEB_SUFFIX}.deb"
+DEB_URL="https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/${DEB_FILE}"
+
+if ! command -v Audiveris &>/dev/null && ! [ -f /opt/audiveris/bin/Audiveris ]; then
+    echo "Downloading Audiveris ${AUDIVERIS_VERSION}..."
+    curl -fsSL "$DEB_URL" -o "/tmp/${DEB_FILE}"
+    dpkg -i "/tmp/${DEB_FILE}" || apt-get install -f -y
+    rm -f "/tmp/${DEB_FILE}"
 fi
 
-# Create wrapper script
-cat > /usr/local/bin/audiveris << 'WRAPPER'
-#!/bin/bash
-java -jar /opt/audiveris/audiveris.jar "$@"
-WRAPPER
-chmod +x /usr/local/bin/audiveris
-echo "Audiveris installed at /usr/local/bin/audiveris"
+# Create a lowercase wrapper for convenience
+if [ -f /opt/audiveris/bin/Audiveris ] && ! [ -f /usr/local/bin/audiveris ]; then
+    ln -sf /opt/audiveris/bin/Audiveris /usr/local/bin/audiveris
+fi
+
+echo "Audiveris installed"
 
 echo -e "${GREEN}Step 7: Installing MySQL...${NC}"
 apt-get install -y mysql-server
