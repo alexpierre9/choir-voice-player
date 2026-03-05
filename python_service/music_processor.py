@@ -7,8 +7,11 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import json
+import xml.etree.ElementTree as ET
+import zipfile
 from typing import Dict, List, Optional, Tuple
 import asyncio
 import base64
@@ -186,10 +189,167 @@ class MusicProcessor:
         """Destructor fallback (unreliable — prefer context manager)"""
         self.cleanup()
 
+    def _run_audiveris(self, pdf_path: str) -> str:
+        """Run Audiveris CLI to convert PDF to MusicXML. Returns path to output MusicXML."""
+        audiveris_cmd = os.environ.get("AUDIVERIS_CMD", "audiveris")
+        output_dir = os.path.join(self.temp_dir, "audiveris_output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        cmd = [audiveris_cmd, "-batch", "-export", "-output", output_dir, pdf_path]
+        logger.info("Running Audiveris: %s", " ".join(cmd))
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Audiveris is not installed. Install it via deploy/setup.sh "
+                "or set AUDIVERIS_CMD to the correct path."
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Audiveris timed out after 120 seconds")
+
+        if result.returncode != 0:
+            logger.error("Audiveris stderr: %s", result.stderr)
+            raise RuntimeError(f"Audiveris failed (exit {result.returncode}): {result.stderr[:500]}")
+
+        # Audiveris outputs .mxl (compressed MusicXML) files
+        mxl_files = [f for f in os.listdir(output_dir) if f.endswith(".mxl")]
+        if not mxl_files:
+            xml_files = [f for f in os.listdir(output_dir) if f.endswith(".xml")]
+            if xml_files:
+                return os.path.join(output_dir, xml_files[0])
+            raise RuntimeError("Audiveris produced no output files")
+
+        # Extract .mxl (ZIP containing MusicXML)
+        mxl_path = os.path.join(output_dir, mxl_files[0])
+        with zipfile.ZipFile(mxl_path, "r") as zf:
+            xml_names = [n for n in zf.namelist() if n.endswith(".xml") and not n.startswith("META-INF")]
+            if not xml_names:
+                raise RuntimeError("Audiveris .mxl contains no XML files")
+            extracted_path = os.path.join(output_dir, "score.xml")
+            with open(extracted_path, "wb") as out:
+                out.write(zf.read(xml_names[0]))
+
+        return extracted_path
+
+    def _refine_musicxml(self, musicxml_path: str, pdf_path: str) -> str:
+        """Use Gemini AI to fix voice assignments, lyrics, and ties/slurs in Audiveris output."""
+        if GENAI_CLIENT is None:
+            return musicxml_path
+
+        with open(musicxml_path, "r", encoding="utf-8") as f:
+            musicxml_text = f.read()
+
+        # Render PDF pages to JPEG for AI reference
+        scale = PDF_RENDER_DPI / 72.0
+        mat = fitz.Matrix(scale, scale)
+        doc = fitz.open(pdf_path)
+        page_limit = min(len(doc), PDF_MAX_PAGES)
+
+        jpeg_pages = []
+        for i in range(page_limit):
+            pix = doc[i].get_pixmap(matrix=mat)
+            jpeg_pages.append(pix.tobytes("jpeg", jpg_quality=80))
+        doc.close()
+
+        prompt = """You are an expert music engraver reviewing automated OMR (Audiveris) output.
+
+Below is MusicXML produced by Audiveris. The original PDF score images are attached.
+
+Fix ONLY these categories — do NOT change note pitches or rhythms:
+
+1. **Voice assignments (SATB):** Ensure parts are correctly labeled and separated.
+   In short-score: stem-up on treble = Soprano, stem-down = Alto,
+   stem-up on bass = Tenor, stem-down = Bass.
+2. **Lyrics:** Fix syllable-to-note alignment and hyphenation.
+3. **Ties and slurs:** Add missing ones visible in the PDF, remove spurious ones.
+
+Return the complete corrected MusicXML. Output ONLY valid XML, no markdown fences.
+
+=== AUDIVERIS OUTPUT ===
+""" + musicxml_text
+
+        contents = [prompt]
+        for jpeg in jpeg_pages:
+            contents.append(genai_types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"))
+
+        model_name = _config.get("gemini_model_name", "gemini-2.0-flash")
+        max_tokens = int(_config.get("gemini_max_output_tokens", 8192))
+
+        response = GENAI_CLIENT.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.1,
+            ),
+        )
+
+        refined_xml = response.text.strip()
+
+        # Strip markdown fences if present
+        if refined_xml.startswith("```"):
+            lines = refined_xml.split("\n")
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            refined_xml = "\n".join(lines)
+
+        # Validate XML
+        try:
+            ET.fromstring(refined_xml)
+        except ET.ParseError as e:
+            logger.warning("AI returned invalid XML, using Audiveris output: %s", e)
+            return musicxml_path
+
+        refined_path = os.path.join(self.temp_dir, "refined_score.xml")
+        with open(refined_path, "w", encoding="utf-8") as f:
+            f.write(refined_xml)
+
+        return refined_path
+
     def process_pdf(self, pdf_path: str) -> str:
+        """Convert PDF to MusicXML using Audiveris OMR. Returns path to generated MusicXML."""
+        if not os.path.exists(pdf_path):
+            raise ValueError(f"PDF file not found: {pdf_path}")
+        if not os.path.isfile(pdf_path):
+            raise ValueError(f"Path is not a file: {pdf_path}")
+        if not pdf_path.lower().endswith('.pdf'):
+            raise ValueError(f"File must be a PDF: {pdf_path}")
+
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        doc.close()
+
+        if total_pages == 0:
+            raise ValueError("Could not extract pages from PDF")
+
+        warnings = []
+        if total_pages > PDF_MAX_PAGES:
+            warnings.append(f"PDF has {total_pages} pages; only first {PDF_MAX_PAGES} will be processed")
+
+        # Step 1: Run Audiveris local OMR
+        musicxml_path = self._run_audiveris(pdf_path)
+        logger.info("Audiveris produced MusicXML: %s", musicxml_path)
+
+        # Step 2: AI refinement (optional — only if Gemini API key is set)
+        if GENAI_CLIENT is not None:
+            try:
+                musicxml_path = self._refine_musicxml(musicxml_path, pdf_path)
+                logger.info("AI refinement completed")
+            except Exception as e:
+                logger.warning("AI refinement failed, using raw Audiveris output: %s", e)
+        else:
+            logger.info("No Gemini API key — skipping AI refinement")
+
+        self._pdf_warnings = warnings
+        return musicxml_path
+
+    def _process_pdf_gemini(self, pdf_path: str) -> str:
         """
-        Convert PDF to MusicXML using Gemini Vision OMR
-        Returns path to generated MusicXML file
+        [LEGACY] Convert PDF to MusicXML using Gemini Vision OMR.
+        Preserved as fallback reference. Use process_pdf() instead.
+        Returns path to generated MusicXML file.
         """
         # Input validation
         if not os.path.exists(pdf_path):
@@ -890,14 +1050,8 @@ async def process_pdf(
             with open(pdf_path, 'wb') as f:
                 f.write(file_content)
 
-            warnings = []
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
-            doc.close()
-            if total_pages > PDF_MAX_PAGES:
-                warnings.append(f"PDF has {total_pages} pages; only the first {PDF_MAX_PAGES} were processed.")
-
             musicxml_path = processor.process_pdf(pdf_path)
+            warnings = getattr(processor, '_pdf_warnings', [])
             analysis = processor.analyze_musicxml(musicxml_path)
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
