@@ -38,6 +38,26 @@ apt-get install -y python3.11 python3.11-venv python3-pip python3.11-dev
 # P-02: Python app packages are installed into the project venv by deploy-app.sh
 # after the repo is cloned. Do NOT install them globally here.
 
+echo -e "${GREEN}Step 6: Installing Java 17 and Audiveris...${NC}"
+apt-get install -y openjdk-17-jre-headless
+
+# Download Audiveris release
+AUDIVERIS_VERSION="5.4"
+AUDIVERIS_DIR="/opt/audiveris"
+mkdir -p "$AUDIVERIS_DIR"
+if [ ! -f "$AUDIVERIS_DIR/audiveris.jar" ]; then
+    curl -fsSL "https://github.com/Audiveris/audiveris/releases/download/$AUDIVERIS_VERSION/Audiveris-$AUDIVERIS_VERSION.jar" \
+        -o "$AUDIVERIS_DIR/audiveris.jar"
+fi
+
+# Create wrapper script
+cat > /usr/local/bin/audiveris << 'WRAPPER'
+#!/bin/bash
+java -jar /opt/audiveris/audiveris.jar "$@"
+WRAPPER
+chmod +x /usr/local/bin/audiveris
+echo "Audiveris installed at /usr/local/bin/audiveris"
+
 echo -e "${GREEN}Step 7: Installing MySQL...${NC}"
 apt-get install -y mysql-server
 systemctl start mysql

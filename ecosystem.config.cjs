@@ -29,7 +29,8 @@ module.exports = {
         PYTHON_SERVICE_PORT: 8001,
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
         // P-12: forward the shared secret so the Python service enforces token auth
-        INTERNAL_SERVICE_TOKEN: process.env.INTERNAL_SERVICE_TOKEN
+        INTERNAL_SERVICE_TOKEN: process.env.INTERNAL_SERVICE_TOKEN,
+        AUDIVERIS_CMD: process.env.AUDIVERIS_CMD || "audiveris"
       }
     }
   ]
