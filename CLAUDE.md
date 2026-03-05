@@ -122,7 +122,8 @@ Vitest configured for server-side only (`server/**/*.test.ts`, `server/**/*.spec
 | `DATABASE_URL` | Yes | MySQL connection string |
 | `JWT_SECRET` | Yes | Session cookie signing key |
 | `AUTH_PASSPHRASE` | Yes | Single-owner login passphrase |
-| `GEMINI_API_KEY` | For PDF uploads | Google Gemini Vision API |
+| `GEMINI_API_KEY` | For AI refinement | Google Gemini API (optional — refines Audiveris OMR output) |
+| `AUDIVERIS_CMD` | No | Path to Audiveris CLI (default `audiveris`) |
 | `INTERNAL_SERVICE_TOKEN` | Recommended in prod | Shared secret between Node and Python service |
 | `OWNER_OPEN_ID` | No | User ID designated as admin |
 | `LOCAL_STORAGE_DIR` | No | Local FS storage path (default `/var/lib/choir-files`) |
