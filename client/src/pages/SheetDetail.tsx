@@ -34,6 +34,7 @@ export default function SheetDetail() {
   const sheetId = params?.id || "";
   const utils = trpc.useUtils();
 
+  const [processingStep, setProcessingStep] = useState<string | null>(null);
   const [voiceAssignments, setVoiceAssignments] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
@@ -74,6 +75,43 @@ export default function SheetDetail() {
     const interval = setInterval(check, 30_000);
     return () => clearInterval(interval);
   }, [sheet?.status, sheet?.updatedAt]);
+
+  // SSE for real-time processing status updates
+  useEffect(() => {
+    if (sheet?.status !== "processing") {
+      setProcessingStep(null);
+      return;
+    }
+
+    const es = new EventSource(`/api/sse/sheet/${sheetId}`);
+
+    es.addEventListener("processing_step", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setProcessingStep(data.step);
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    es.addEventListener("status_changed", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.status === "ready" || data.status === "error") {
+          refetch();
+        }
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    es.onerror = () => {
+      es.close();
+      // Falls back to existing 3s polling
+    };
+
+    return () => es.close();
+  }, [sheet?.status, sheetId, refetch]);
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -299,7 +337,7 @@ export default function SheetDetail() {
               }
               <div className="space-y-1">
                 <p className="font-medium">
-                  {sheet.errorMessage ?? "Processing your sheet music…"}
+                  {processingStep ?? sheet.errorMessage ?? "Processing your sheet music…"}
                 </p>
                 {isStalled ? (
                   <p className="text-sm text-amber-700">

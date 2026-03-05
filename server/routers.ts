@@ -22,6 +22,7 @@ import {
   getAppSettings,
 } from "./db";
 import { storagePut, storageGet, storageDelete } from "./storage-active";
+import { emitProcessingEvent } from "./sse";
 import FormData from "form-data";
 import fetch from "node-fetch";
 import fs from "fs/promises";
@@ -362,6 +363,64 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    // Bulk delete sheet music
+    deleteMany: protectedProcedure
+      .input(
+        z.object({
+          ids: z.array(z.string().min(1).max(64)).min(1).max(50),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const results = await Promise.allSettled(
+          input.ids.map(async (id) => {
+            const sheet = await getSheetMusic(id);
+            if (!sheet || sheet.userId !== ctx.user.id) return;
+
+            const deletePromises: Promise<void>[] = [];
+            if (sheet.originalFileKey) {
+              deletePromises.push(
+                storageDelete(sheet.originalFileKey).catch((err) => {
+                  logger.warn("Failed to delete original file", {
+                    key: sheet.originalFileKey,
+                    err: String(err),
+                  });
+                }),
+              );
+            }
+            if (sheet.musicxmlKey) {
+              deletePromises.push(
+                storageDelete(sheet.musicxmlKey).catch((err) => {
+                  logger.warn("Failed to delete musicxml", {
+                    key: sheet.musicxmlKey,
+                    err: String(err),
+                  });
+                }),
+              );
+            }
+            if (sheet.midiFileKeys) {
+              const midiKeys = sheet.midiFileKeys as Record<string, string>;
+              for (const key of Object.values(midiKeys)) {
+                if (key) {
+                  deletePromises.push(
+                    storageDelete(key).catch((err) => {
+                      logger.warn("Failed to delete midi file", {
+                        key,
+                        err: String(err),
+                      });
+                    }),
+                  );
+                }
+              }
+            }
+            await Promise.all(deletePromises);
+            await deleteSheetMusic(id);
+          }),
+        );
+
+        const deleted = results.filter((r) => r.status === "fulfilled").length;
+        return { deleted, total: input.ids.length };
+      }),
+
     // Retry failed processing (resets to the beginning of the pipeline)
     retry: protectedProcedure
       .input(z.object({ id: z.string().min(1).max(64) })) // B-09
@@ -612,8 +671,11 @@ async function processSheetMusicAsync(
     // Fail fast if the Python service is unreachable
     await checkPythonServiceHealth();
 
+    const stepMsg = fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…";
+    emitProcessingEvent(sheetId, "processing_step", { step: stepMsg });
+
     await updateSheetMusic(sheetId, {
-      errorMessage: fileType === "pdf" ? "Reading score (OCR)…" : "Parsing score…",
+      errorMessage: stepMsg,
     });
 
     // Call Python service
@@ -664,6 +726,7 @@ async function processSheetMusicAsync(
       result.analysis.warnings = result.warnings;
     }
 
+    emitProcessingEvent(sheetId, "processing_step", { step: "Storing score…" });
     await updateSheetMusic(sheetId, { errorMessage: "Storing score…" });
 
     // B-14: use userId parameter directly — no getSheetMusic() call needed
@@ -683,17 +746,24 @@ async function processSheetMusicAsync(
       voiceAssignments,
       errorMessage: "Generating MIDI files…",
     });
+    emitProcessingEvent(sheetId, "processing_step", { step: "Generating MIDI files…" });
 
     // Generate MIDI files, then set status to "ready"
     await enqueueMidiRegeneration(userId, sheetId, musicxmlKey, voiceAssignments);
 
     await updateSheetMusic(sheetId, { status: "ready", errorMessage: null });
+    emitProcessingEvent(sheetId, "status_changed", { status: "ready" });
 
   } catch (error) {
     logger.error("Sheet processing pipeline failed", { sheetId, err: String(error) });
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
     await updateSheetMusic(sheetId, {
       status: "error",
-      errorMessage: error instanceof Error ? error.message : "Unknown error",
+      errorMessage: errorMsg,
+    });
+    emitProcessingEvent(sheetId, "status_changed", {
+      status: "error",
+      errorMessage: errorMsg,
     });
   }
 }
