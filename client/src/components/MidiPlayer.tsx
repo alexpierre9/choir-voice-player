@@ -17,6 +17,11 @@ interface VoiceControl {
 interface MidiPlayerProps {
   midiUrls: Record<string, string>; // { soprano: url, alto: url, ... }
   availableVoices: string[];
+  sheetTitle?: string;
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9\-_ ]/g, "").trim().replace(/\s+/g, "-") || "sheet";
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5] as const;
@@ -31,7 +36,7 @@ const voiceLabels: Record<string, string> = {
   all: "All Voices",
 };
 
-export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProps) {
+export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: MidiPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -513,7 +518,7 @@ export default function MidiPlayer({ midiUrls, availableVoices }: MidiPlayerProp
                       {midiUrls[control.voice] && (
                         <a
                           href={midiUrls[control.voice]}
-                          download={`${control.label.toLowerCase()}.mid`}
+                          download={`${sheetTitle ? sanitizeFilename(sheetTitle) + "-" : ""}${control.label.toLowerCase()}.mid`}
                           aria-label={`Download ${control.label} MIDI`}
                         >
                           <Button
