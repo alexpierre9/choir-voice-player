@@ -24,6 +24,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           "tone": ["tone", "@tonejs/midi"],
+          "osmd": ["opensheetmusicdisplay"],
           "vendor": ["react", "react-dom", "@tanstack/react-query", "@trpc/client", "superjson"],
         },
       },
