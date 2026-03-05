@@ -299,6 +299,20 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
           }
           return updated;
         });
+      } else if (e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key, 10) - 1;
+        setVoiceControls(prev => {
+          if (idx >= prev.length) return prev;
+          const target = prev[idx];
+          const updated = prev.map((vc, i) => i === idx ? { ...vc, muted: !vc.muted } : vc);
+          const synth = synthsRef.current.get(target.voice);
+          if (synth) {
+            const newMuted = !target.muted;
+            const effectiveMuted = newMuted || (soloVoiceRef.current !== null && soloVoiceRef.current !== target.voice);
+            synth.volume.value = effectiveMuted ? -Infinity : Tone.gainToDb(target.volume);
+          }
+          return updated;
+        });
       }
     };
     window.addEventListener("keydown", handler);
@@ -482,7 +496,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
             return (
               <div
                 key={control.voice}
-                className={`flex items-center gap-3 p-3 border-2 rounded-lg dark:bg-gray-700 ${colors.border}`}
+                className={`flex items-center gap-3 p-3 border-2 rounded-lg dark:bg-gray-700 ${colors.border} ${effectiveMuted ? "opacity-40" : ""}`}
               >
                 <Button
                   variant="ghost"
@@ -502,7 +516,10 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
                   <div className="flex items-center justify-between gap-1">
                     <div className="flex items-center gap-2">
                       <span className={`inline-block w-2 h-2 rounded-full ${colors.dot}`} />
-                      <span className="text-sm font-medium dark:text-gray-200">{control.label}</span>
+                      <span className={`text-sm font-medium dark:text-gray-200 ${effectiveMuted ? "line-through" : ""}`}>{control.label}</span>
+                      <kbd className="ml-1.5 text-[10px] font-mono text-muted-foreground/50 border border-muted-foreground/20 rounded px-1">
+                        {voiceControls.indexOf(control) + 1}
+                      </kbd>
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
