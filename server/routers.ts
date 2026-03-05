@@ -569,7 +569,7 @@ async function checkPythonServiceHealth(): Promise<void> {
       msg = `Python processing service health check failed: ${err.message}`;
     }
     _healthCache = { ok: false, error: msg, expiresAt: Date.now() + 5_000 };
-    throw new Error(msg);
+    throw new Error(msg, { cause: err });
   } finally {
     clearTimeout(timeoutId);
   }
