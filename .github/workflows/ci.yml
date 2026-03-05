@@ -29,6 +29,9 @@ jobs:
       - name: TypeScript type check
         run: pnpm check
 
+      - name: Build
+        run: pnpm build
+
       - name: Run tests
         # P-04: --passWithNoTests lets CI succeed when no test files exist yet
         # while still failing if existing tests break.
