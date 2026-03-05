@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -13,11 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ArrowLeft, Music, AlertTriangle } from "lucide-react";
+import { Loader2, ArrowLeft, Music, AlertTriangle, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getVoiceColors } from "@/lib/voiceColors";
+
+const NotationEditor = lazy(() => import("@/components/NotationEditor"));
 
 const VOICE_OPTIONS = [
   { value: "soprano", label: "Soprano" },
@@ -38,6 +40,8 @@ export default function SheetDetail() {
   const [voiceAssignments, setVoiceAssignments] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
+  const [isEditing, setIsEditing] = useState(false);
+  const [musicxmlContent, setMusicxmlContent] = useState<string | null>(null);
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
     { id: sheetId },
@@ -160,6 +164,18 @@ export default function SheetDetail() {
     },
     onError: (error) => {
       toast.error(`Failed to update: ${error.message}`);
+    },
+  });
+
+  const updateMusicXMLMutation = trpc.sheetMusic.updateMusicXML.useMutation({
+    onSuccess: () => {
+      toast.success("Score updated — regenerating MIDI...");
+      setIsEditing(false);
+      setMusicxmlContent(null);
+      utils.sheetMusic.get.invalidate({ id: sheetId });
+    },
+    onError: (err) => {
+      toast.error(`Save failed: ${err.message}`);
     },
   });
 
@@ -397,6 +413,23 @@ export default function SheetDetail() {
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <h2 className="text-xl font-semibold">Voice Assignments</h2>
                   <div className="flex gap-2">
+                    {sheet.musicxmlKey && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          if (!musicxmlContent && sheet.musicxmlKey) {
+                            const res = await fetch(`/files/${sheet.musicxmlKey}`);
+                            const xml = await res.text();
+                            setMusicxmlContent(xml);
+                          }
+                          setIsEditing(true);
+                        }}
+                      >
+                        <Pencil className="h-4 w-4 mr-2" />
+                        Review &amp; Edit
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -492,6 +525,32 @@ export default function SheetDetail() {
           </>
         )}
       </div>
+
+      {isEditing && musicxmlContent && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 bg-background flex items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin" />
+            </div>
+          }
+        >
+          <div className="fixed inset-0 z-50 bg-background">
+            <div className="flex items-center justify-between p-2 border-b">
+              <h3 className="font-semibold">{sheet.title} — Notation Editor</h3>
+              <Button variant="ghost" size="sm" onClick={() => setIsEditing(false)}>
+                Close
+              </Button>
+            </div>
+            <NotationEditor
+              musicxml={musicxmlContent}
+              pdfUrl={sheet.originalFileKey ? `/files/${sheet.originalFileKey}` : null}
+              onSave={(xml) => updateMusicXMLMutation.mutate({ id: sheetId, musicxml: xml })}
+              isSaving={updateMusicXMLMutation.isPending}
+              className="h-[calc(100vh-49px)]"
+            />
+          </div>
+        </Suspense>
+      )}
     </div>
   );
 }
