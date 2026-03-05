@@ -135,6 +135,14 @@ export const appRouter = router({
           });
         }
 
+        logger.info("Sheet music upload", {
+          sheetId,
+          userId,
+          filename: input.filename,
+          fileType: input.fileType,
+          sizeBytes: fileBuffer.length,
+        });
+
         // Save original file to local storage
         const fileExtension = input.fileType === "pdf" ? "pdf" : "musicxml";
         const originalFileKey = `sheet-music/${userId}/${sheetId}/original.${fileExtension}`;
