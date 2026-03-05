@@ -20,7 +20,10 @@ export default function Home() {
   // F-07: also track isLoading so we can show a skeleton instead of a blank section
   const { data: userSheets, isLoading: sheetsLoading, isError: sheetsError } = trpc.sheetMusic.list.useQuery(undefined, {
     enabled: !!user,
+    placeholderData: (prev) => prev,
   });
+
+  const skeletonCount = userSheets?.length || 3;
 
   const filteredSheets = userSheets
     ? search.trim()
@@ -116,7 +119,7 @@ export default function Home() {
           {/* F-07: show skeleton while the list is fetching to avoid layout shift */}
           {sheetsLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[...Array(3)].map((_, i) => (
+              {[...Array(skeletonCount)].map((_, i) => (
                 <Card key={i} className="p-4 animate-pulse dark:bg-gray-800 dark:border-gray-700">
                   <div className="flex items-start gap-3">
                     <div className="h-6 w-6 bg-gray-200 dark:bg-gray-600 rounded flex-shrink-0 mt-1" />
