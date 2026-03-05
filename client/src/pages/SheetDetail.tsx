@@ -148,29 +148,37 @@ export default function SheetDetail() {
     const loadMidiUrls = async () => {
       if (sheet?.status === "ready" && sheet.midiFileKeys && !isCancelled) {
         const keys = sheet.midiFileKeys as Record<string, string>;
+        const voices = Object.keys(keys);
+
+        const results = await Promise.allSettled(
+          voices.map((voice) =>
+            utils.sheetMusic.getMidiUrl
+              .fetch({ id: sheetId, voice })
+              .then((result) => ({ voice, url: result.url }))
+          )
+        );
+
+        if (isCancelled) return;
+
         const urls: Record<string, string> = {};
+        const failed: string[] = [];
 
-        for (const [voice] of Object.entries(keys)) {
-          if (isCancelled) break;
-
-          try {
-            const result = await utils.sheetMusic.getMidiUrl.fetch({
-              id: sheetId,
-              voice,
-            });
-            if (!isCancelled) {
-              urls[voice] = result.url;
-            }
-          } catch (error) {
-            if (!isCancelled) {
-              console.error(`Failed to load MIDI URL for ${voice}:`, error);
-            }
+        results.forEach((result, i) => {
+          if (result.status === "fulfilled") {
+            urls[result.value.voice] = result.value.url;
+          } else {
+            failed.push(voices[i]);
+            console.error(`Failed to load MIDI URL for ${voices[i]}:`, result.reason);
           }
+        });
+
+        if (failed.length > 0 && failed.length < voices.length) {
+          toast.warning(`Could not load MIDI for: ${failed.join(", ")}`);
+        } else if (failed.length === voices.length) {
+          toast.error("Failed to load all MIDI URLs");
         }
 
-        if (!isCancelled) {
-          setMidiUrls(urls);
-        }
+        setMidiUrls(urls);
       }
     };
 
@@ -429,6 +437,7 @@ export default function SheetDetail() {
                 <MidiPlayer
                   midiUrls={midiUrls}
                   availableVoices={availableVoices}
+                  sheetTitle={sheet.title}
                 />
               </div>
             )}
