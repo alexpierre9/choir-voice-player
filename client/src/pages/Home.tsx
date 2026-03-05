@@ -277,7 +277,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t bg-white/80 backdrop-blur-sm mt-16">
         <div className="container mx-auto px-6 py-8 text-center text-gray-600">
-          <p>© 2025 Choir Voice Player. Built for choir directors and singers.</p>
+          <p>© {new Date().getFullYear()} {APP_TITLE}. Built for choir directors and singers.</p>
         </div>
       </footer>
     </div>
