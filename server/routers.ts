@@ -619,6 +619,7 @@ async function processSheetMusicAsync(
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 150000); // 150 s (> Gemini's 120 s timeout + overhead)
+    const fetchStart = Date.now();
     const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
@@ -629,6 +630,12 @@ async function processSheetMusicAsync(
       signal: controller.signal as any,
     });
     clearTimeout(timeoutId);
+    logger.info("Python service responded", {
+      sheetId,
+      endpoint,
+      durationMs: Date.now() - fetchStart,
+      status: response.status,
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -752,6 +759,7 @@ async function regenerateMidiAsync(
 
     const midiController = new AbortController();
     const midiTimeoutId = setTimeout(() => midiController.abort(), 60000); // 60 s for MIDI generation
+    const midiStart = Date.now();
     const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
@@ -762,6 +770,11 @@ async function regenerateMidiAsync(
       signal: midiController.signal as any,
     });
     clearTimeout(midiTimeoutId);
+    logger.info("MIDI generation responded", {
+      sheetId,
+      durationMs: Date.now() - midiStart,
+      status: response.status,
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
