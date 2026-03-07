@@ -16,19 +16,28 @@ const safeUserFields = {
 } as const;
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _client: ReturnType<typeof postgres> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      const client = postgres(process.env.DATABASE_URL);
-      _db = drizzle(client, { schema });
+      _client = postgres(process.env.DATABASE_URL);
+      _db = drizzle(_client, { schema });
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
     }
   }
   return _db;
+}
+
+export async function closeDb() {
+  if (_client) {
+    await _client.end();
+    _client = null;
+    _db = null;
+  }
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Prerequisites
 
-Node.js 22+, pnpm 10+, Python 3.11+, MySQL 8.0+ (or Docker).
+Node.js 22+, pnpm 10+, Python 3.11+, PostgreSQL 16 (via platform Docker network).
 
 ## Commands
 
@@ -31,7 +31,7 @@ Full-stack monorepo for a choir voice separation app: users upload sheet music (
 
 **Client** (`/client/`) — React 19 + Vite 7, Tailwind CSS 4, shadcn/ui, Wouter routing, React Query + tRPC hooks, Tone.js for MIDI playback.
 
-**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with MySQL, JWT session cookies (single-owner passphrase auth), dual storage adapters (cloud or local filesystem), rate limiting.
+**Server** (`/server/`) — Express + tRPC 11 (type-safe RPC), Drizzle ORM with postgres-js (lazy connection), JWT session cookies (single-owner passphrase auth), dual storage adapters (cloud or local filesystem), rate limiting.
 
 **Python Service** (`/python_service/`) — FastAPI on port 8001. Handles the music processing pipeline: Gemini Vision for PDF→MusicXML OMR, music21 for MusicXML parsing and voice detection, MIDI file generation per voice part.
 
@@ -104,7 +104,7 @@ Two adapters both implement `StorageAdapter` (defined in `server/storage-interfa
 
 ### Database
 
-Drizzle ORM with MySQL2 (lazy connection). Three tables: `users`, `sheet_music`, and `app_settings`. Schema in `drizzle/schema.ts`, migrations in `drizzle/`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys. The `app_settings` table stores key-value pairs for server config (e.g., Gemini API key, model name).
+Drizzle ORM with postgres-js (lazy connection). Three tables: `users`, `sheet_music`, and `app_settings`. Schema in `drizzle/schema.ts`, migrations in `drizzle/`. The `sheet_music` table stores file keys (S3-style paths), processing status, and JSON blobs for analysis results, voice assignments, and MIDI file keys. The `app_settings` table stores key-value pairs for server config (e.g., Gemini API key, model name).
 
 ### Path Aliases
 
@@ -119,7 +119,7 @@ Vitest configured for server-side only (`server/**/*.test.ts`, `server/**/*.spec
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `DATABASE_URL` | Yes | MySQL connection string |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `JWT_SECRET` | Yes | Session cookie signing key |
 | `AUTH_PASSPHRASE` | Yes | Single-owner login passphrase |
 | `GEMINI_API_KEY` | For AI refinement | Google Gemini API (optional — refines Audiveris OMR output) |
@@ -137,4 +137,4 @@ Vitest configured for server-side only (`server/**/*.test.ts`, `server/**/*.spec
 
 ## Deployment
 
-Docker Compose runs the Node server (port 3000) + MySQL 8.0. The `/deploy/` directory contains setup scripts for VPS deployments (nginx, database config). See `deploy/DEPLOYMENT_GUIDE.md` for details.
+Docker Compose runs the Node server (port 3000) + Python OMR service in the same container network. The `/deploy/` directory contains setup scripts for VPS deployments (nginx, database config). See `deploy/DEPLOYMENT_GUIDE.md` for details.

@@ -10,7 +10,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
-import { markStaleProcessingSheets, getAppSettings } from "../db";
+import { markStaleProcessingSheets, getAppSettings, closeDb } from "../db";
 import { validateEnv, ENV } from "./env";
 import { logger } from "./logger";
 import { sseRouter } from "../sse";
@@ -208,3 +208,8 @@ async function startServer() {
 }
 
 startServer().catch(console.error);
+
+process.on('SIGTERM', async () => {
+  await closeDb();
+  process.exit(0);
+});
