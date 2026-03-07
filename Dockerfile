@@ -7,7 +7,7 @@ WORKDIR /app
 
 COPY package.json pnpm-lock.yaml ./
 RUN npm install -g pnpm
-RUN pnpm install
+RUN pnpm install --frozen-lockfile
 
 COPY ./client ./client
 COPY ./shared ./shared
@@ -35,7 +35,7 @@ RUN pip3 install --no-cache-dir -r python_service/requirements.txt --break-syste
 # Install Node dependencies
 COPY package.json pnpm-lock.yaml ./
 RUN npm install -g pnpm
-RUN pnpm install --prod
+RUN pnpm install --frozen-lockfile --prod
 
 # Copy backend source
 COPY ./server ./server

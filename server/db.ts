@@ -1,7 +1,9 @@
 import { and, desc, eq, lt } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic, appSettings } from "../drizzle/schema";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { InsertUser, SafeUser, users, sheetMusic, InsertSheetMusic, SheetMusic, appSettings } from "../drizzle/schema.js";
 import { inArray } from "drizzle-orm";
+import * as schema from "../drizzle/schema.js";
 
 const safeUserFields = {
   id: users.id,
@@ -19,7 +21,8 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const client = postgres(process.env.DATABASE_URL);
+      _db = drizzle(client, { schema });
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -71,7 +74,8 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       updateSet.lastSignedIn = new Date();
     }
 
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
+    await db.insert(users).values(values).onConflictDoUpdate({
+      target: users.id,
       set: updateSet,
     });
   } catch (error) {
@@ -105,7 +109,6 @@ export async function createSheetMusic(data: InsertSheetMusic): Promise<SheetMus
     throw new Error("Database not available");
   }
 
-  // B-12: single-statement ops don't benefit from a transaction — removed wrapper
   await db.insert(sheetMusic).values(data);
   const result = await db.select().from(sheetMusic).where(eq(sheetMusic.id, data.id!)).limit(1);
   return result[0];
@@ -117,7 +120,6 @@ export async function updateSheetMusic(id: string, data: Partial<InsertSheetMusi
     throw new Error("Database not available");
   }
 
-  // B-12: single-statement op — transaction wrapper removed
   await db.update(sheetMusic).set(data).where(eq(sheetMusic.id, id));
 }
 
@@ -150,7 +152,6 @@ export async function deleteSheetMusic(id: string): Promise<void> {
     throw new Error("Database not available");
   }
 
-  // B-12: single-statement op — transaction wrapper removed
   await db.delete(sheetMusic).where(eq(sheetMusic.id, id));
 }
 
@@ -161,9 +162,10 @@ export async function getAppSetting(key: string): Promise<string | undefined> {
   if (!db) return undefined;
   try {
     const result = await db.select().from(appSettings).where(eq(appSettings.key, key)).limit(1);
-    return result.length > 0 ? result[0].value : undefined;
+    return result.length > 0 ? result[0].value ?? undefined : undefined;
   } catch (err: any) {
-    if (err?.errno === 1146 || err?.cause?.errno === 1146) return undefined;
+    // Postgres error code 42P01 = undefined_table
+    if (err?.code === '42P01') return undefined;
     throw err;
   }
 }
@@ -171,7 +173,10 @@ export async function getAppSetting(key: string): Promise<string | undefined> {
 export async function setAppSetting(key: string, value: string): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.insert(appSettings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
+  await db.insert(appSettings).values({ key, value }).onConflictDoUpdate({
+    target: appSettings.key,
+    set: { value },
+  });
 }
 
 export async function deleteAppSetting(key: string): Promise<void> {
@@ -188,12 +193,14 @@ export async function getAppSettings(keys: string[]): Promise<Record<string, str
     const rows = await db.select().from(appSettings).where(inArray(appSettings.key, keys));
     const result: Record<string, string> = {};
     for (const row of rows) {
-      result[row.key] = row.value;
+      if (row.value !== null && row.value !== undefined) {
+        result[row.key] = row.value;
+      }
     }
     return result;
   } catch (err: any) {
-    // MySQL error 1146 = ER_NO_SUCH_TABLE — migration not applied yet
-    if (err?.errno === 1146 || err?.cause?.errno === 1146) {
+    // Postgres error code 42P01 = undefined_table — migration not applied yet
+    if (err?.code === '42P01') {
       console.warn("[Database] app_settings table not found — run `pnpm db:push` to apply migrations");
       return {};
     }
@@ -219,7 +226,8 @@ export async function markStaleProcessingSheets(thresholdMs = 5 * 60 * 1000): Pr
         eq(sheetMusic.status, "processing"),
         lt(sheetMusic.updatedAt, cutoff)
       )
-    );
+    )
+    .returning({ id: sheetMusic.id });
 
-  return (result as any)[0]?.affectedRows ?? 0;
+  return result.length;
 }
