@@ -19,6 +19,10 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+echo "[entrypoint] Running database migrations..."
+node /app/dist/migrate.js
+echo "[entrypoint] Migrations done."
+
 echo "[entrypoint] Starting Node.js server..."
 node dist/index.js &
 NODE_PID=$!
