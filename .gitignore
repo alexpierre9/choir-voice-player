@@ -107,3 +107,5 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+report.json
+semgrep_report.json

@@ -83,8 +83,6 @@ class MusicProcessor:
         if not pdf_path.lower().endswith('.pdf'):
             raise ValueError(f"File must be a PDF: {pdf_path}")
         
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise RuntimeError("GEMINI_API_KEY is not set")
         gemini_api_key = os.environ.get("GEMINI_API_KEY")
         if not gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not set")
