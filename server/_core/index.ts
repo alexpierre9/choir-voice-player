@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { createServer } from "http";
 import net from "net";
 import { randomUUID } from "crypto";
@@ -81,6 +82,40 @@ async function startServer() {
 
   // Trust proxy (required for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
+
+  // CORS — allow the app's own origin(s) only.
+  // In development all localhost origins are allowed.
+  // In production, set ALLOWED_ORIGINS (comma-separated) or fall back to DOMAIN.
+  const isDev = process.env.NODE_ENV !== "production";
+  const allowedOrigins: string[] = isDev
+    ? [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+      ]
+    : (process.env.ALLOWED_ORIGINS
+        ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+        : process.env.DOMAIN
+          ? [`https://${process.env.DOMAIN}`, `http://${process.env.DOMAIN}`]
+          : []); // empty → same-origin (no cross-origin requests allowed)
+
+  app.use(
+    cors({
+      origin: isDev
+        ? (origin, cb) => {
+            // Allow requests with no origin (curl, Postman, server-to-server)
+            // and any localhost/127 origin in development.
+            if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+            cb(new Error(`CORS: origin ${origin} not allowed`));
+          }
+        : (origin, cb) => {
+            if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+            cb(new Error(`CORS: origin ${origin} not allowed`));
+          },
+      credentials: true,
+    })
+  );
 
   // Attach a unique request ID to every incoming request.
   // Downstream code can access it via req.reqId for correlation logging.
