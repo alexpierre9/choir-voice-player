@@ -34,6 +34,7 @@ export default function SheetDetail() {
   const [voiceAssignments, setVoiceAssignments] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
+  const [processingTimeout, setProcessingTimeout] = useState(false);
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
     { id: sheetId },
@@ -121,6 +122,18 @@ export default function SheetDetail() {
     };
   }, [sheet?.status, sheet?.midiFileKeys, sheetId]); // Only re-run when status or midiFileKeys change
 
+  // Show timeout warning if processing takes more than 2 minutes
+  useEffect(() => {
+    if (sheet?.status !== "processing") {
+      setProcessingTimeout(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setProcessingTimeout(true);
+    }, 2 * 60 * 1000); // 2 minutes
+    return () => clearTimeout(timer);
+  }, [sheet?.status]);
+
   const handleVoiceChange = (partIndex: string, newVoice: string) => {
     setVoiceAssignments((prev) => ({
       ...prev,
@@ -179,11 +192,29 @@ export default function SheetDetail() {
           <Card className="p-6 bg-blue-50 border-blue-200" aria-live="polite" aria-atomic="true">
             <div className="flex items-center gap-3">
               <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-              <div>
+              <div className="flex-1">
                 <p className="font-medium">Processing your sheet music...</p>
                 <p className="text-sm text-gray-600">
                   This may take a few minutes. The page will update automatically.
                 </p>
+                {processingTimeout && (
+                  <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                    <p className="text-sm text-yellow-800 font-medium">
+                      Processing is taking longer than expected.
+                    </p>
+                    <p className="text-sm text-yellow-700 mt-1">
+                      If this continues, you can try re-uploading your file.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => setLocation("/")}
+                    >
+                      Go back and re-upload
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           </Card>
