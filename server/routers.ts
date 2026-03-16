@@ -780,7 +780,7 @@ function parsePythonError(errorText: string): string {
 
 // B-14: userId is now passed as a parameter to avoid a redundant DB round-trip
 // inside the async pipeline (the upload/retry callers already have it).
-async function processSheetMusicAsync(
+export async function processSheetMusicAsync(
   sheetId: string,
   userId: string,
   fileBuffer: Buffer,

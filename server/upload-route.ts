@@ -20,10 +20,7 @@ import {
   createSheetMusic,
   updateSheetMusic,
 } from "./db";
-import { ENV } from "./_core/env";
-import { emitProcessingEvent } from "./sse";
-import FormData from "form-data";
-import fetch from "node-fetch";
+import { processSheetMusicAsync } from "./routers";
 import { parse as parseCookieHeader } from "cookie";
 
 // ---------------------------------------------------------------------------
@@ -47,58 +44,13 @@ const upload = multer({
 });
 
 // ---------------------------------------------------------------------------
-// Helpers (mirrors the logic in routers.ts processSheetMusicAsync)
+// Helpers
 // ---------------------------------------------------------------------------
-
-const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
-
-const INTERNAL_TOKEN_HEADER: Record<string, string> = ENV.internalServiceToken
-  ? { "X-Internal-Token": ENV.internalServiceToken }
-  : {};
 
 function getFileType(filename: string): "pdf" | "musicxml" {
   const lower = filename.toLowerCase();
   if (lower.endsWith(".pdf")) return "pdf";
   return "musicxml";
-}
-
-/**
- * Trigger async processing pipeline — identical logic to the tRPC upload mutation.
- * Imported inline to avoid circular dependencies.
- */
-async function processSheetMusicAsync(
-  sheetId: string,
-  userId: string,
-  fileBuffer: Buffer,
-  fileType: "pdf" | "musicxml"
-): Promise<void> {
-  // Emit initial queued event
-  emitProcessingEvent(sheetId, "status", { status: "processing", progress: 0 });
-
-  // Build multipart request to Python service
-  const formData = new FormData();
-  const filename = fileType === "pdf" ? "original.pdf" : "original.musicxml";
-  formData.append("file", fileBuffer, {
-    filename,
-    contentType: fileType === "pdf" ? "application/pdf" : "application/xml",
-  });
-  formData.append("sheet_id", sheetId);
-  formData.append("user_id", userId);
-  formData.append("file_type", fileType);
-
-  const res = await fetch(`${PYTHON_SERVICE_URL}/api/process`, {
-    method: "POST",
-    headers: {
-      ...INTERNAL_TOKEN_HEADER,
-      ...formData.getHeaders(),
-    },
-    body: formData,
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Python service returned ${res.status}: ${text}`);
-  }
 }
 
 // ---------------------------------------------------------------------------
