@@ -233,80 +233,181 @@ class MusicProcessor:
         return extracted_path
 
     def _refine_musicxml(self, musicxml_path: str, pdf_path: str) -> str:
-        """Use Gemini AI to fix voice assignments, lyrics, and ties/slurs in Audiveris output."""
+        """Use Gemini AI to apply targeted patch corrections to Audiveris MusicXML output.
+
+        Instead of asking Gemini to regenerate the entire MusicXML (which exceeds ~8K output
+        token limits for scores larger than ~35KB), we ask it to return a compact JSON list of
+        corrections and apply them programmatically.  This keeps Gemini's output well under the
+        token cap while still fixing the most important issues (part names, clef errors, etc.).
+        """
         if GENAI_CLIENT is None:
             return musicxml_path
 
         with open(musicxml_path, "r", encoding="utf-8") as f:
             musicxml_text = f.read()
 
-        # Render PDF pages to JPEG for AI reference
-        scale = PDF_RENDER_DPI / 72.0
-        mat = fitz.Matrix(scale, scale)
-        doc = fitz.open(pdf_path)
-        page_limit = min(len(doc), PDF_MAX_PAGES)
+        part_summary = self._extract_part_summary(musicxml_text)
 
-        jpeg_pages = []
-        for i in range(page_limit):
-            pix = doc[i].get_pixmap(matrix=mat)
-            jpeg_pages.append(pix.tobytes("jpeg", jpg_quality=80))
-        doc.close()
-
-        prompt = """You are an expert music engraver reviewing automated OMR (Audiveris) output.
-
-Below is MusicXML produced by Audiveris. The original PDF score images are attached.
-
-Fix ONLY these categories — do NOT change note pitches or rhythms:
-
-1. **Voice assignments (SATB):** Ensure parts are correctly labeled and separated.
-   In short-score: stem-up on treble = Soprano, stem-down = Alto,
-   stem-up on bass = Tenor, stem-down = Bass.
-2. **Lyrics:** Fix syllable-to-note alignment and hyphenation.
-3. **Ties and slurs:** Add missing ones visible in the PDF, remove spurious ones.
-
-Return the complete corrected MusicXML. Output ONLY valid XML, no markdown fences.
-
-=== AUDIVERIS OUTPUT ===
-""" + musicxml_text
-
-        contents = [prompt]
-        for jpeg in jpeg_pages:
-            contents.append(genai_types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"))
+        prompt = (
+            "You are a music engraving expert reviewing MusicXML output from Audiveris"
+            " (optical music recognition).\n\n"
+            "Analyze the MusicXML snippet and part list below, then return a JSON array of"
+            " corrections to apply. Each correction is an object with:\n"
+            '- "type": one of "rename_part", "fix_clef", "fix_transposition",'
+            ' "add_dynamic", "fix_time_signature"\n'
+            '- "part_id": the part ID from the XML (e.g. "P1", "P2")\n'
+            '- "current_value": what Audiveris produced\n'
+            '- "correct_value": what it should be\n\n'
+            "Focus ONLY on:\n"
+            "1. Part names — rename generic names like \"Part_1\" to proper voice names"
+            " (Soprano, Alto, Tenor, Bass) based on pitch ranges and clef.\n"
+            "2. Obvious clef errors — e.g. a soprano part using bass clef.\n"
+            "3. Time signature errors — only if clearly wrong.\n\n"
+            "Do NOT attempt to correct individual notes, rhythms, lyrics, or measures.\n"
+            "Return ONLY a valid JSON array, no explanation, no markdown.\n\n"
+            "Example output:\n"
+            '[\n'
+            '  {"type": "rename_part", "part_id": "P1", "current_value": "Part_1", "correct_value": "Soprano"},\n'
+            '  {"type": "rename_part", "part_id": "P2", "current_value": "Part_2", "correct_value": "Alto"}\n'
+            ']\n\n'
+            f"MusicXML to analyze (first 8000 chars):\n{musicxml_text[:8000]}\n\n"
+            f"Full part list from XML:\n{part_summary}"
+        )
 
         model_name = _config.get("gemini_model_name", "gemini-2.0-flash")
         max_tokens = int(_config.get("gemini_max_output_tokens", 8192))
 
-        response = GENAI_CLIENT.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                max_output_tokens=max_tokens,
-                temperature=0.1,
-            ),
-        )
-
-        refined_xml = response.text.strip()
-
-        # Strip markdown fences if present
-        if refined_xml.startswith("```"):
-            lines = refined_xml.split("\n")
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            refined_xml = "\n".join(lines)
-
-        # Validate XML
         try:
-            ET.fromstring(refined_xml)
-        except ET.ParseError as e:
-            logger.warning("AI returned invalid XML, using Audiveris output: %s", e)
+            response = GENAI_CLIENT.models.generate_content(
+                model=model_name,
+                contents=[prompt],
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.1,
+                ),
+            )
+
+            corrections_text = response.text.strip()
+            logger.info("Gemini refinement raw response: %s", corrections_text[:500])
+
+            # Strip markdown fences if Gemini wrapped the JSON
+            if corrections_text.startswith("```"):
+                lines = corrections_text.split("\n")
+                lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                corrections_text = "\n".join(lines)
+
+            corrections = json.loads(corrections_text)
+            if not isinstance(corrections, list):
+                raise ValueError(f"Expected JSON array, got {type(corrections)}")
+
+            logger.info("Gemini returned %d correction(s): %s", len(corrections), corrections)
+            refined_xml = self._apply_corrections(musicxml_text, corrections)
+
+            # Validate the patched XML before writing
+            try:
+                ET.fromstring(refined_xml)
+            except ET.ParseError as parse_err:
+                logger.warning(
+                    "Patched XML is invalid (%s), using raw Audiveris output", parse_err
+                )
+                return musicxml_path
+
+            refined_path = os.path.join(self.temp_dir, "refined_score.xml")
+            with open(refined_path, "w", encoding="utf-8") as f:
+                f.write(refined_xml)
+
+            logger.info("AI refinement applied %d correction(s), saved to %s", len(corrections), refined_path)
+            return refined_path
+
+        except Exception as e:
+            logger.warning("Gemini refinement failed (%s), using raw Audiveris output", e)
             return musicxml_path
 
-        refined_path = os.path.join(self.temp_dir, "refined_score.xml")
-        with open(refined_path, "w", encoding="utf-8") as f:
-            f.write(refined_xml)
+    def _extract_part_summary(self, musicxml: str) -> str:
+        """Extract part IDs, names, and clef info from MusicXML for the Gemini prompt."""
+        try:
+            root = ET.fromstring(musicxml)
+            # Handle both namespaced and non-namespaced MusicXML
+            ns_prefix = "{http://www.musicxml.org/ns/}"
+            parts = []
+            score_parts = root.findall(f".//{ns_prefix}score-part")
+            if not score_parts:
+                score_parts = root.findall(".//score-part")
+            for part in score_parts:
+                pid = part.get("id", "")
+                name_el = part.find(f"{ns_prefix}part-name") or part.find("part-name")
+                name = name_el.text if name_el is not None else "Unknown"
+                parts.append(f"{pid}: {name}")
+            return "\n".join(parts) if parts else "(no parts found)"
+        except Exception:
+            return "(could not parse parts)"
 
-        return refined_path
+    def _apply_corrections(self, musicxml: str, corrections: list) -> str:
+        """Apply Gemini's targeted corrections to the MusicXML string.
+
+        Uses XML-aware replacement scoped to individual score-part elements by part_id,
+        so corrections for parts that share the same current_value (e.g. all named "Voice")
+        are each applied independently to the correct part only.
+        """
+        try:
+            root = ET.fromstring(musicxml)
+        except ET.ParseError:
+            logger.warning("_apply_corrections: could not parse XML, returning unchanged")
+            return musicxml
+
+        ns_prefix = "{http://www.musicxml.org/ns/}"
+        changed = 0
+
+        for c in corrections:
+            ctype = c.get("type", "")
+            if ctype == "rename_part":
+                part_id = c.get("part_id", "")
+                correct = c.get("correct_value", "")
+                if not part_id or not correct:
+                    continue
+
+                # Find the specific score-part element by id attribute
+                score_part = None
+                for sp in root.iter(f"{ns_prefix}score-part"):
+                    if sp.get("id") == part_id:
+                        score_part = sp
+                        break
+                if score_part is None:
+                    # Try without namespace
+                    for sp in root.iter("score-part"):
+                        if sp.get("id") == part_id:
+                            score_part = sp
+                            break
+
+                if score_part is None:
+                    logger.warning("rename_part: part_id %s not found in XML", part_id)
+                    continue
+
+                # Update part-name
+                pn = score_part.find(f"{ns_prefix}part-name")
+                if pn is None:
+                    pn = score_part.find("part-name")
+                old_name = pn.text if pn is not None else None
+                if pn is not None:
+                    pn.text = correct
+                    logger.info("Renamed part %s: '%s' → '%s'", part_id, old_name, correct)
+                    changed += 1
+
+                # Update part-abbreviation to first letter
+                pa = score_part.find(f"{ns_prefix}part-abbreviation")
+                if pa is None:
+                    pa = score_part.find("part-abbreviation")
+                if pa is not None:
+                    pa.text = correct[:1]
+
+        if changed == 0:
+            logger.info("_apply_corrections: no changes applied")
+            return musicxml
+
+        # Serialise back to string
+        return ET.tostring(root, encoding="unicode")
 
     def process_pdf(self, pdf_path: str) -> str:
         """Convert PDF to MusicXML using Audiveris OMR. Returns path to generated MusicXML."""

@@ -93,9 +93,15 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
         });
       });
 
+      console.log(`[MidiPlayer] Building part for "${voice}": ${notes.length} notes, duration: ${(rawDuration / speedFactor).toFixed(2)}s`);
+
       const part = new Tone.Part((time, note) => {
         const synth = synthsRef.current.get(voice);
-        if (synth) synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+        if (!synth) {
+          console.warn(`[MidiPlayer] No synth found for voice "${voice}" at time ${time}`);
+          return;
+        }
+        synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
       }, notes);
 
       part.loop = false;
@@ -103,6 +109,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     });
 
     setDuration(maxDuration);
+    console.log(`[MidiPlayer] buildParts complete: ${partsRef.current.size} parts, maxDuration: ${maxDuration.toFixed(2)}s`);
   };
 
   // Load MIDI files (network fetch + synth creation — done once per midiUrls change)
@@ -161,6 +168,9 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       pendingSynths.forEach((synth, voice) => synthsRef.current.set(voice, synth));
       pendingSynths.clear(); // mark as committed so cleanup won't double-dispose
 
+      console.log(`[MidiPlayer] Loaded MIDI for voices: ${Array.from(midiDataRef.current.keys()).join(", ")}`);
+      if (failed.length > 0) console.warn(`[MidiPlayer] Failed to load voices: ${failed.join(", ")}`);
+
       setFailedVoices(failed);
 
       if (failed.length === availableVoices.filter(v => v !== "all").length) {
@@ -168,6 +178,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       }
 
       buildParts(speedRef.current);
+      console.log(`[MidiPlayer] Built ${partsRef.current.size} playable parts`);
       setIsLoading(false);
     };
 
@@ -202,7 +213,17 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
   }, [speed]);
 
   const startPlayback = async () => {
+    console.log("[MidiPlayer] Starting playback...");
+    
+    const acStateBefore = Tone.Destination.context.state;
+    console.log(`[MidiPlayer] AudioContext state before start: ${acStateBefore}`);
+    
     await Tone.start();
+    
+    const acStateAfter = Tone.Destination.context.state;
+    console.log(`[MidiPlayer] AudioContext state after start: ${acStateAfter}`);
+    console.log(`[MidiPlayer] Parts count: ${partsRef.current.size}`);
+    console.log(`[MidiPlayer] Synths available: ${Array.from(synthsRef.current.keys()).join(", ")}`);
 
     if (!isPausedRef.current) {
       // Fresh start (or after Stop): cancel any previously scheduled events and
@@ -212,7 +233,8 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       Tone.getTransport().seconds = 0;
 
       // (Re-)schedule all parts from beat 0
-      partsRef.current.forEach(part => {
+      partsRef.current.forEach((part, voice) => {
+        console.log(`[MidiPlayer] Starting part: ${voice}`);
         part.start(0);
       });
     }
@@ -222,6 +244,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     isPausedRef.current = false;
     Tone.getTransport().start();
     setIsPlaying(true);
+    console.log("[MidiPlayer] Transport started, playback commenced");
 
     // Update progress
     progressIntervalRef.current = setInterval(() => {
