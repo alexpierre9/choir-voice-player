@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { createServer } from "http";
 import net from "net";
 import { randomUUID } from "crypto";
@@ -10,6 +11,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
+import { uploadRouter } from "../upload-route";
 import { markStaleProcessingSheets, getAppSettings, closeDb } from "../db";
 import { validateEnv, ENV } from "./env";
 import { logger } from "./logger";
@@ -81,6 +83,40 @@ async function startServer() {
   // Trust proxy (required for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
 
+  // CORS — allow the app's own origin(s) only.
+  // In development all localhost origins are allowed.
+  // In production, set ALLOWED_ORIGINS (comma-separated) or fall back to DOMAIN.
+  const isDev = process.env.NODE_ENV !== "production";
+  const allowedOrigins: string[] = isDev
+    ? [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+      ]
+    : (process.env.ALLOWED_ORIGINS
+        ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+        : process.env.DOMAIN
+          ? [`https://${process.env.DOMAIN}`, `http://${process.env.DOMAIN}`]
+          : []); // empty → same-origin (no cross-origin requests allowed)
+
+  app.use(
+    cors({
+      origin: isDev
+        ? (origin, cb) => {
+            // Allow requests with no origin (curl, Postman, server-to-server)
+            // and any localhost/127 origin in development.
+            if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+            cb(new Error(`CORS: origin ${origin} not allowed`));
+          }
+        : (origin, cb) => {
+            if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+            cb(new Error(`CORS: origin ${origin} not allowed`));
+          },
+      credentials: true,
+    })
+  );
+
   // Attach a unique request ID to every incoming request.
   // Downstream code can access it via req.reqId for correlation logging.
   app.use((req: any, _res, next) => {
@@ -149,6 +185,7 @@ async function startServer() {
 
   // Apply stricter rate limiting to upload endpoint
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
+  app.use("/api/upload", uploadLimiter);
 
   // OAuth disabled: using email+password auth instead
   // registerOAuthRoutes(app);
@@ -158,6 +195,9 @@ async function startServer() {
 
   // SSE endpoint for real-time processing status updates
   app.use(sseRouter);
+
+  // Multipart file upload route (replaces base64 tRPC upload)
+  app.use(uploadRouter);
 
   // tRPC API
   app.use(
