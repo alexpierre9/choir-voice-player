@@ -178,53 +178,33 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       // Use Tone.js's underlying AudioContext so scheduling is unified
       const audioContext = Tone.getContext().rawContext as AudioContext;
 
-      // Determine unique instrument names needed
-      const instrumentsToLoad = new Set<string>();
-      for (const voice of availableVoices) {
-        if (voice === "all") continue;
-        if (!failed.includes(voice)) {
-          const instrName = VOICE_INSTRUMENTS[voice] || "choir_aahs";
-          instrumentsToLoad.add(instrName);
-        }
-      }
+      // Load a SEPARATE SoundFont instance per voice.
+      // Even if soprano & alto both use "choir_aahs", they need independent
+      // instances so volume/mute/solo controls work independently.
+      // The browser caches the underlying .sf2 fetch — no duplicate downloads.
+      const voicesToLoad = availableVoices.filter(v => v !== "all" && !failed.includes(v));
+      setLoadingMessage(`Loading choir sounds (${voicesToLoad.length} voice${voicesToLoad.length > 1 ? "s" : ""})...`);
 
-      setLoadingMessage(`Loading choir sounds (${instrumentsToLoad.size} instrument${instrumentsToLoad.size > 1 ? "s" : ""})...`);
-
-      // Load each unique instrument once, then assign to voices
-      const loadedInstruments = new Map<string, VoiceSynth>();
-
-      for (const instrName of Array.from(instrumentsToLoad)) {
+      for (const voice of voicesToLoad) {
         if (signal.aborted) break;
+        const instrName = VOICE_INSTRUMENTS[voice] || "choir_aahs";
         try {
           const soundfont = await loadSoundfontInstrument(audioContext, instrName);
-          loadedInstruments.set(instrName, { type: "soundfont", instrument: soundfont });
-          console.log(`[MidiPlayer] Loaded SoundFont instrument: ${instrName}`);
+          pendingSynths.set(voice, { type: "soundfont", instrument: soundfont });
+          console.log(`[MidiPlayer] Loaded SoundFont for voice "${voice}" (${instrName})`);
         } catch (err) {
           if (signal.aborted) break;
-          console.warn(`[MidiPlayer] SoundFont load failed for "${instrName}", falling back to PolySynth:`, err);
-          // Fallback: create a Tone.PolySynth for all voices using this instrument
+          console.warn(`[MidiPlayer] SoundFont load failed for voice "${voice}" (${instrName}), falling back to PolySynth:`, err);
           const fallback = new Tone.PolySynth(Tone.Synth, {
             oscillator: { type: "sine" },
             envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
           }).toDestination();
           fallback.volume.value = -10;
-          loadedInstruments.set(instrName, { type: "polySynth", synth: fallback });
+          pendingSynths.set(voice, { type: "polySynth", synth: fallback });
         }
       }
 
       if (signal.aborted) return;
-
-      // Assign instruments to voices
-      for (const voice of availableVoices) {
-        if (voice === "all") continue;
-        if (failed.includes(voice)) continue;
-
-        const instrName = VOICE_INSTRUMENTS[voice] || "choir_aahs";
-        const synth = loadedInstruments.get(instrName);
-        if (synth) {
-          pendingSynths.set(voice, synth);
-        }
-      }
 
       // Commit: transfer from pending collections into the stable refs
       pendingMidi.forEach((midi, voice) => midiDataRef.current.set(voice, midi));

@@ -30,32 +30,21 @@ export type VoiceSynth =
 
 // We use a WeakMap on the AudioContext so cached instruments are garbage-collected
 // when the context is closed.  Map value: instrument name → Soundfont instance.
-const contextInstrumentCache = new WeakMap<AudioContext, Map<string, Soundfont>>();
-
 /**
- * Load (or return a cached) Soundfont instrument for the given AudioContext.
- * Throws if the instrument fails to load after one attempt.
+ * Create a NEW Soundfont instrument instance for the given AudioContext.
+ * Each voice MUST have its own instance — sharing one Soundfont object between
+ * soprano/alto (or tenor/bass) would mean volume/mute/solo on one voice
+ * affects the other, since they share the same output node.
+ *
+ * The browser caches the underlying .sf2 fetch, so multiple instances of the
+ * same instrument name don't re-download the samples.
  */
 export async function loadSoundfontInstrument(
   context: AudioContext,
   instrumentName: string,
 ): Promise<Soundfont> {
-  // Get (or create) the per-context instrument map
-  let instrumentMap = contextInstrumentCache.get(context);
-  if (!instrumentMap) {
-    instrumentMap = new Map<string, Soundfont>();
-    contextInstrumentCache.set(context, instrumentMap);
-  }
-
-  // Return cached instance if available
-  const cached = instrumentMap.get(instrumentName);
-  if (cached) return cached;
-
-  // Create and await load
   const instrument = new Soundfont(context, { instrument: instrumentName });
   await instrument.load;
-
-  instrumentMap.set(instrumentName, instrument);
   return instrument;
 }
 
