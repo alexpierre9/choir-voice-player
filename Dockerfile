@@ -1,68 +1,69 @@
 # Multi-stage build for the Choir Voice Player
+
+# Stage 1: Build frontend
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app
 
-# Copy package files
 COPY package.json pnpm-lock.yaml ./
-
-# Install pnpm and dependencies
 RUN npm install -g pnpm
 RUN pnpm install
 
-# Copy frontend source
 COPY ./client ./client
 COPY ./shared ./shared
 COPY ./vite.config.ts ./
 COPY ./tsconfig.json ./
 
-# Build the frontend
-RUN pnpm build
+RUN pnpm vite build
 
-# Python service stage
-FROM python:3.11-slim AS python-service
-
-WORKDIR /app
-
-# Install system dependencies required for pdf2image
-RUN apt-get update && apt-get install -y \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Python dependencies
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy Python service
-COPY ./python_service ./python_service
-
-# Node.js backend stage
+# Stage 2: Build backend deps
 FROM node:22-alpine AS backend
 
 WORKDIR /app
 
-# Copy package files
 COPY package.json pnpm-lock.yaml ./
-
-# Install pnpm and dependencies
 RUN npm install -g pnpm
-RUN pnpm install
+RUN pnpm install --prod
 
-# Copy backend source
 COPY ./server ./server
 COPY ./shared ./shared
 COPY ./drizzle ./drizzle
 COPY ./drizzle.config.ts ./
 COPY ./tsconfig.json ./
 
+# Build server bundle
+RUN pnpm esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist
+
+# Stage 3: Final production image
+FROM node:22-slim AS production
+
+WORKDIR /app
+
+# Install Python 3 + poppler for pdf2image
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip python3-venv poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps
+COPY python_service/requirements.txt /app/python_service/
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/python_service/requirements.txt
+
+# Copy Python service
+COPY python_service/ /app/python_service/
+
+# Copy Node.js app
+COPY --from=backend /app/node_modules /app/node_modules
+COPY --from=backend /app/dist/index.js /app/dist/index.js
+COPY --from=backend /app/package.json /app/
+
 # Copy built frontend assets
-COPY --from=frontend-builder /app/dist ./dist
+COPY --from=frontend-builder /app/dist/public /app/dist/public
 
-# Expose ports
-EXPOSE 3000
-EXPOSE 8001
+# Volumes for persistent file storage
+VOLUME ["/var/lib/choir-files"]
 
-# Start both services
-CMD ["sh", "-c", "node dist/index.js & python3 python_service/music_processor.py && wait"]
+EXPOSE 3000 8001
+
+COPY docker-entrypoint.sh /app/
+RUN chmod +x /app/docker-entrypoint.sh
+CMD ["/app/docker-entrypoint.sh"]

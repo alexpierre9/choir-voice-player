@@ -101,7 +101,7 @@ class MusicProcessor:
         print(f"Running Gemini Vision OMR on {pdf_path}...")
         
         try:
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
             model = genai.GenerativeModel(model_name)
             
             prompt = """
