@@ -112,7 +112,12 @@ export const appRouter = router({
   }),
 
   sheetMusic: router({
-    // Upload and process a file (PDF or MusicXML)
+    /**
+     * @deprecated Use POST /api/upload (multipart FormData) instead.
+     * This tRPC procedure sends file data as base64 JSON, which is ~33% larger
+     * and requires buffering the entire file in memory on the client before sending.
+     * Kept for backward compatibility only.
+     */
     upload: protectedProcedure
       .input(z.object({
         filename: z.string(),

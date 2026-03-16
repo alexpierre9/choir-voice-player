@@ -10,6 +10,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
+import { uploadRouter } from "../upload-route";
 import { markStaleProcessingSheets, getAppSettings, closeDb } from "../db";
 import { validateEnv, ENV } from "./env";
 import { logger } from "./logger";
@@ -149,6 +150,7 @@ async function startServer() {
 
   // Apply stricter rate limiting to upload endpoint
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
+  app.use("/api/upload", uploadLimiter);
 
   // OAuth disabled: using email+password auth instead
   // registerOAuthRoutes(app);
@@ -158,6 +160,9 @@ async function startServer() {
 
   // SSE endpoint for real-time processing status updates
   app.use(sseRouter);
+
+  // Multipart file upload route (replaces base64 tRPC upload)
+  app.use(uploadRouter);
 
   // tRPC API
   app.use(

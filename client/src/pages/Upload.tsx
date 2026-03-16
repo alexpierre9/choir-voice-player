@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload as UploadIcon, FileMusic, FileText, FileCode, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -36,23 +35,10 @@ export default function Upload() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadPhase, setUploadPhase] = useState<"idle" | "reading" | "uploading">("idle");
-  const [readProgress, setReadProgress] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState(0);
   // F-08: track drag-over state for visual feedback
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const uploadMutation = trpc.sheetMusic.upload.useMutation({
-    onSuccess: (data) => {
-      toast.success("File uploaded successfully! Processing...");
-      setLocation(`/sheet/${data.id}`);
-    },
-    onError: (error) => {
-      toast.error(`Upload failed: ${error.message}`);
-      setIsUploading(false);
-      setUploadPhase("idle");
-    },
-  });
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -79,41 +65,56 @@ export default function Upload() {
     }
 
     setIsUploading(true);
-    setUploadPhase("reading");
-    setReadProgress(0);
+    setUploadProgress(0);
 
-    const base64Content = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onprogress = (e) => {
-        if (e.lengthComputable) {
-          setReadProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      };
-      reader.onload = (e) => {
-        const base64Data = e.target?.result as string;
-        resolve(base64Data.split(",")[1]);
-      };
-      reader.onerror = () => reject(new Error("Failed to read file"));
-      reader.readAsDataURL(selectedFile);
-    }).catch((err) => {
-      toast.error(err.message);
+    try {
+      // Build multipart FormData — no base64 encoding needed
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("title", title || selectedFile.name);
+
+      // Use XMLHttpRequest so we can track upload progress
+      const sheetId = await new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        });
+
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve(data.sheetId);
+            } catch {
+              reject(new Error("Invalid server response"));
+            }
+          } else {
+            let msg = `Upload failed (${xhr.status})`;
+            try {
+              const data = JSON.parse(xhr.responseText);
+              if (data.error) msg = data.error;
+            } catch { /* ignore */ }
+            reject(new Error(msg));
+          }
+        });
+
+        xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+        xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+        xhr.open("POST", "/api/upload");
+        xhr.send(formData);
+      });
+
+      toast.success("File uploaded successfully! Processing...");
+      setLocation(`/sheet/${sheetId}`);
+    } catch (err: any) {
+      toast.error(`Upload failed: ${err.message}`);
       setIsUploading(false);
-      setUploadPhase("idle");
-      return null;
-    });
-
-    if (!base64Content) return;
-
-    setUploadPhase("uploading");
-
-    // F-02: validated extension → type (getFileType returns non-null here since we validated on select/drop)
-    const fileType = getFileType(selectedFile.name) ?? "musicxml";
-    await uploadMutation.mutateAsync({
-      filename: selectedFile.name,
-      fileType,
-      fileData: base64Content,
-      title: title || selectedFile.name,
-    });
+      setUploadProgress(0);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -234,20 +235,13 @@ export default function Upload() {
               />
             </div>
 
-            {uploadPhase === "reading" && (
+            {isUploading && (
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-300">
-                  <span>Reading file…</span>
-                  <span>{readProgress}%</span>
+                  <span>Uploading…</span>
+                  <span>{uploadProgress}%</span>
                 </div>
-                <Progress value={readProgress} className="h-2" />
-              </div>
-            )}
-
-            {uploadPhase === "uploading" && (
-              <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-300">
-                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-                <span>Uploading…</span>
+                <Progress value={uploadProgress} className="h-2" />
               </div>
             )}
 
@@ -260,7 +254,7 @@ export default function Upload() {
               {isUploading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {uploadPhase === "reading" ? "Reading file…" : "Uploading…"}
+                  Uploading…
                 </>
               ) : (
                 <>
