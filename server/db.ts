@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, and, lt, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users, sheetMusic, InsertSheetMusic, SheetMusic } from "../drizzle/schema";
 import { ENV } from './_core/env';
@@ -122,13 +122,41 @@ export async function getSheetMusic(id: string): Promise<SheetMusic | undefined>
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function getUserSheetMusic(userId: string): Promise<SheetMusic[]> {
+export async function getUserSheetMusic(userId: string, limit = 20, offset = 0): Promise<SheetMusic[]> {
   const db = await getDb();
   if (!db) {
     throw new Error("Database not available");
   }
 
-  return await db.select().from(sheetMusic).where(eq(sheetMusic.userId, userId));
+  return await db.select()
+    .from(sheetMusic)
+    .where(eq(sheetMusic.userId, userId))
+    .orderBy(desc(sheetMusic.createdAt))
+    .limit(limit)
+    .offset(offset);
+}
+
+export async function recoverStuckProcessing(timeoutMinutes = 30): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+  try {
+    const result = await db.update(sheetMusic)
+      .set({ status: 'error', errorMessage: 'Processing timed out (auto-recovered)' })
+      .where(and(
+        eq(sheetMusic.status, 'processing'),
+        lt(sheetMusic.updatedAt, cutoff)
+      ));
+    const recovered = (result as any)[0]?.affectedRows ?? 0;
+    if (recovered > 0) {
+      console.log(`[DB] Recovered ${recovered} stuck-processing sheet(s)`);
+    }
+    return recovered;
+  } catch (err) {
+    console.error('[DB] recoverStuckProcessing failed:', err);
+    return 0;
+  }
 }
 
 export async function deleteSheetMusic(id: string): Promise<void> {

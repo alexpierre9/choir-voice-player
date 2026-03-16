@@ -6,7 +6,6 @@ import Header from "@/components/Header";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload as UploadIcon, FileMusic, Loader2 } from "lucide-react";
-import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -26,17 +25,6 @@ export default function Upload() {
       </div>
     );
   }
-
-  const uploadMutation = trpc.sheetMusic.upload.useMutation({
-    onSuccess: (data) => {
-      toast.success("File uploaded successfully! Processing...");
-      setLocation(`/sheet/${data.id}`);
-    },
-    onError: (error) => {
-      toast.error(`Upload failed: ${error.message}`);
-      setIsUploading(false);
-    },
-  });
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -67,33 +55,29 @@ export default function Upload() {
     setIsUploading(true);
 
     try {
-      // Read file as base64
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64Data = e.target?.result as string;
-        const base64Content = base64Data.split(",")[1];
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      if (title.trim()) {
+        formData.append("title", title.trim());
+      }
 
-        // Determine file type
-        const fileType = selectedFile.name.toLowerCase().endsWith(".pdf")
-          ? "pdf"
-          : "musicxml";
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+        credentials: "include", // send auth cookie
+      });
 
-        await uploadMutation.mutateAsync({
-          filename: selectedFile.name,
-          fileType,
-          fileData: base64Content,
-          title: title || selectedFile.name,
-        });
-      };
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Upload failed" }));
+        throw new Error(err.error ?? "Upload failed");
+      }
 
-      reader.onerror = () => {
-        toast.error("Failed to read file");
-        setIsUploading(false);
-      };
-
-      reader.readAsDataURL(selectedFile);
-    } catch (error) {
+      const data = await response.json();
+      toast.success("File uploaded successfully! Processing...");
+      setLocation(`/sheet/${data.id}`);
+    } catch (error: any) {
       console.error("Upload error:", error);
+      toast.error(`Upload failed: ${error?.message ?? "Unknown error"}`);
       setIsUploading(false);
     }
   };

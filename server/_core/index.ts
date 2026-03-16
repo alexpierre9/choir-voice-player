@@ -9,6 +9,8 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createFileServerHandler } from "../storage-local";
+import { uploadRouter } from "../upload-route";
+import { recoverStuckProcessing } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -69,11 +71,15 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // Apply stricter rate limiting to upload endpoint
+  // Apply stricter rate limiting to upload endpoints
   app.use("/api/trpc/sheetMusic.upload", uploadLimiter);
+  app.use("/api/upload", uploadLimiter);
 
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+  
+  // Multipart upload route (preferred over tRPC base64 upload)
+  app.use(uploadRouter);
   
   // Static file serving for uploaded files (MIDI, PDFs, etc.)
   app.use("/files", createFileServerHandler());
@@ -103,6 +109,10 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // Recover any stuck-processing records on startup and every 5 minutes
+  recoverStuckProcessing().catch(console.error);
+  setInterval(() => recoverStuckProcessing().catch(console.error), 5 * 60 * 1000);
 }
 
 startServer().catch(console.error);

@@ -15,8 +15,19 @@ async function ensureStorageDir() {
 }
 
 function normalizeKey(relKey: string): string {
-  // Prevent directory traversal
-  return relKey.replace(/\.\./g, '').replace(/^\/+/, '');
+  // Decode URI components first to catch encoded traversal sequences like %2F..%2F
+  const decoded = decodeURIComponent(relKey);
+  // Strip null bytes
+  const clean = decoded.replace(/\0/g, '');
+  // Resolve to prevent all directory traversal variants
+  const resolved = path.resolve(STORAGE_DIR, clean);
+  const storageRoot = path.resolve(STORAGE_DIR);
+  // MUST start with STORAGE_DIR (with trailing sep to avoid prefix collisions)
+  if (!resolved.startsWith(storageRoot + path.sep) && resolved !== storageRoot) {
+    throw new Error('Path traversal detected');
+  }
+  // Return relative key
+  return path.relative(STORAGE_DIR, resolved);
 }
 
 function getFilePath(relKey: string): string {
@@ -70,7 +81,14 @@ export async function storageDelete(relKey: string): Promise<void> {
 // Express middleware to serve files
 export function createFileServerHandler() {
   return async (req: any, res: any, next: any) => {
-    const filePath = path.join(STORAGE_DIR, req.path.replace(/^\/files/, ''));
+    const requestedPath = decodeURIComponent(req.path.replace(/^\/files/, ''));
+    const filePath = path.resolve(STORAGE_DIR, requestedPath.replace(/^\/+/, ''));
+    
+    // Prevent path traversal
+    const storageRoot = path.resolve(STORAGE_DIR);
+    if (!filePath.startsWith(storageRoot + path.sep) && filePath !== storageRoot) {
+      return res.status(403).end();
+    }
     
     if (!existsSync(filePath)) {
       return next();

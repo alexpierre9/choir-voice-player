@@ -85,6 +85,9 @@ class MusicProcessor:
         
         if not os.environ.get("GEMINI_API_KEY"):
             raise RuntimeError("GEMINI_API_KEY is not set")
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not set")
         
         # Convert first page of PDF to image
         images = convert_from_path(pdf_path, first_page=1, last_page=1, dpi=300)
@@ -290,7 +293,7 @@ class MusicProcessor:
     def generate_midi_files(
         self, 
         musicxml_path: str, 
-        voice_assignments: Dict[int, str],
+        voice_assignments: Dict[str, str],  # keys are STRING indices ("0", "1", ...)
         output_dir: str
     ) -> Dict[str, str]:
         """
@@ -298,7 +301,7 @@ class MusicProcessor:
         
         Args:
             musicxml_path: Path to MusicXML file
-            voice_assignments: Dict mapping part index to voice type
+            voice_assignments: Dict mapping part index (as string) to voice type
             output_dir: Directory to save MIDI files
         
         Returns:
@@ -310,7 +313,7 @@ class MusicProcessor:
         voice_parts: Dict[str, List[stream.Part]] = {}
         
         for part_idx, part in enumerate(score.parts):
-            voice_type = voice_assignments.get(part_idx, VoiceType.OTHER)
+            voice_type = voice_assignments.get(str(part_idx), VoiceType.OTHER)  # str() key to match JSON keys
             
             if voice_type not in voice_parts:
                 voice_parts[voice_type] = []
@@ -362,16 +365,26 @@ class MusicProcessor:
             return instrument.Vocalist()
     
 # FastAPI endpoints
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends, Header
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 app = FastAPI(title="Choir Voice Player - Music Processing Service")
 
-# Enable CORS - configurable origins
-ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "*")
-ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")] if ALLOWED_ORIGINS_STR != "*" else ["*"]
+# Internal API auth secret
+API_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
+
+async def verify_internal_auth(x_internal_secret: Optional[str] = Header(None)):
+    """Verify internal API secret header. If no secret configured, allow all (dev mode)."""
+    if not API_SECRET:
+        return  # No secret configured = dev mode, allow all
+    if x_internal_secret != API_SECRET:
+        raise HTTPException(403, "Forbidden")
+
+# Enable CORS - configurable origins (default to localhost only, NOT wildcard)
+ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
@@ -388,7 +401,7 @@ def create_temp_processor():
 
 
 @app.post("/api/process-pdf")
-async def process_pdf(file: UploadFile = File(...)):
+async def process_pdf(file: UploadFile = File(...), _auth: None = Depends(verify_internal_auth)):
     """Process PDF sheet music using OMR"""
     # Validate file type
     if not file.filename.lower().endswith('.pdf'):
@@ -435,7 +448,7 @@ async def process_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/process-musicxml")
-async def process_musicxml(file: UploadFile = File(...)):
+async def process_musicxml(file: UploadFile = File(...), _auth: None = Depends(verify_internal_auth)):
     """Process uploaded MusicXML file"""
     # Validate file type
     if not (file.filename.lower().endswith('.xml') or file.filename.lower().endswith('.musicxml') or file.filename.lower().endswith('.mxl')):
@@ -481,7 +494,8 @@ async def process_musicxml(file: UploadFile = File(...)):
 @app.post("/api/generate-midi")
 async def generate_midi(
     musicxml: str = Form(...),
-    voice_assignments: str = Form(...)
+    voice_assignments: str = Form(...),
+    _auth: None = Depends(verify_internal_auth)
 ):
     """Generate MIDI files for each voice"""
 
@@ -539,25 +553,21 @@ async def generate_midi(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint — lightweight, no external API calls."""
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
-    
-    # Test Gemini API if configured
-    gemini_working = False
-    if gemini_configured:
-        try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro"))
-            # Simple test to check if API is accessible
-            response = model.generate_content("Say 'health check' in one word")
-            gemini_working = bool(response.text and "health" in response.text.lower())
-        except Exception:
-            gemini_working = False
-    
+
+    # Check music21 is importable without running anything expensive
+    music21_available = False
+    try:
+        import music21  # noqa: F401
+        music21_available = True
+    except ImportError:
+        music21_available = False
+
     return {
         "status": "healthy",
         "gemini_configured": gemini_configured,
-        "gemini_working": gemini_working,
+        "music21_available": music21_available,
     }
 
 

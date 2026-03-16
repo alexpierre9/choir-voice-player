@@ -17,6 +17,25 @@ import fetch from "node-fetch";
 
 // Python service URL
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8001";
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "";
+
+// Retry helper for Python service calls
+async function fetchWithRetry(url: string, options: any, retries = 3, delayMs = 2000): Promise<any> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      if (response.ok) return response;
+      if (response.status >= 500 && attempt < retries) {
+        await new Promise(r => setTimeout(r, delayMs * attempt));
+        continue;
+      }
+      return response; // Return non-retryable errors as-is
+    } catch (err) {
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, delayMs * attempt));
+    }
+  }
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -114,17 +133,24 @@ export const appRouter = router({
         return sheet;
       }),
     
-    // List user's sheet music
+    // List user's sheet music (paginated)
     list: protectedProcedure
-      .query(async ({ ctx }) => {
-        return await getUserSheetMusic(ctx.user.id);
+      .input(z.object({
+        limit: z.number().min(1).max(100).default(20),
+        offset: z.number().min(0).default(0),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        return await getUserSheetMusic(ctx.user.id, input?.limit ?? 20, input?.offset ?? 0);
       }),
     
     // Update voice assignments and regenerate MIDI
     updateVoiceAssignments: protectedProcedure
       .input(z.object({
         id: z.string(),
-        voiceAssignments: z.record(z.string(), z.string()), // { "0": "soprano", "1": "alto", ... }
+        voiceAssignments: z.record(
+          z.string().regex(/^\d+$/),  // keys must be numeric strings
+          z.enum(["soprano", "alto", "tenor", "bass", "other"])
+        ),
       }))
       .mutation(async ({ ctx, input }) => {
         const sheet = await getSheetMusic(input.id);
@@ -245,8 +271,8 @@ export const appRouter = router({
 
 export type AppRouter = typeof appRouter;
 
-// Helper function to process sheet music asynchronously
-async function processSheetMusicAsync(
+// Helper function to process sheet music asynchronously (exported for upload route)
+export async function processSheetMusicAsync(
   sheetId: string,
   fileBuffer: Buffer,
   fileType: "pdf" | "musicxml"
@@ -260,9 +286,13 @@ async function processSheetMusicAsync(
     });
     
     const endpoint = fileType === "pdf" ? "/api/process-pdf" : "/api/process-musicxml";
-    const response = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
+    const response = await fetchWithRetry(`${PYTHON_SERVICE_URL}${endpoint}`, {
       method: 'POST',
       body: formData as any,
+      headers: {
+        ...formData.getHeaders(),
+        'X-Internal-Secret': INTERNAL_API_SECRET,
+      },
     });
     
     if (!response.ok) {
@@ -343,9 +373,13 @@ async function regenerateMidiAsync(
     formData.append('musicxml', musicxmlContent);
     formData.append('voice_assignments', JSON.stringify(voiceAssignments));
 
-    const response = await fetch(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
+    const response = await fetchWithRetry(`${PYTHON_SERVICE_URL}/api/generate-midi`, {
       method: 'POST',
       body: formData as any,
+      headers: {
+        ...formData.getHeaders(),
+        'X-Internal-Secret': INTERNAL_API_SECRET,
+      },
     });
 
     if (!response.ok) {
