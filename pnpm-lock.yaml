@@ -202,6 +202,9 @@ importers:
       recharts:
         specifier: ^2.15.2
         version: 2.15.4(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      smplr:
+        specifier: ^0.19.0
+        version: 0.19.0
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -3997,6 +4000,10 @@ packages:
   smart-buffer@4.2.0:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
+
+  smplr@0.19.0:
+    resolution: {integrity: sha512-UWySTDsrgbsgbJKQE7ZfuZuKoSZ4MxrxegzjgvVmFcdUy8HzSeIzmtDTyRhUbXETUaSgPF7+wr4u4TWVqTKHKA==}
+    engines: {node: '>=14.0.0'}
 
   socks-proxy-agent@8.0.5:
     resolution: {integrity: sha512-HehCEsotFqbPW9sJ8WVYB6UbmIMv7kUUORIF2Nncq4VQvBfNBLibW9YZR5dlYCSUhwcD628pRllm7n+E+YTzJw==}
@@ -8509,6 +8516,8 @@ snapshots:
 
   smart-buffer@4.2.0:
     optional: true
+
+  smplr@0.19.0: {}
 
   socks-proxy-agent@8.0.5:
     dependencies:

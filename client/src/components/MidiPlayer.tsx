@@ -6,6 +6,15 @@ import { Slider } from "@/components/ui/slider";
 import { Card } from "@/components/ui/card";
 import { Play, Pause, Square, Volume2, VolumeX, Loader2, AlertCircle, Download } from "lucide-react";
 import { getVoiceColors } from "@/lib/voiceColors";
+import {
+  VOICE_INSTRUMENTS,
+  loadSoundfontInstrument,
+  playSynthNote,
+  setSynthVolume,
+  stopSynth,
+  disposeSynth,
+  type VoiceSynth,
+} from "@/lib/soundfontPlayer";
 
 interface VoiceControl {
   voice: string;
@@ -44,13 +53,15 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
   const [soloVoice, setSoloVoice] = useState<string | null>(null);
   const [speed, setSpeed] = useState<Speed>(1);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState("Loading MIDI player...");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [failedVoices, setFailedVoices] = useState<string[]>([]);
   const isPlayingRef = useRef(false);
   const speedRef = useRef<Speed>(1);
   const soloVoiceRef = useRef<string | null>(null);
 
-  const synthsRef = useRef<Map<string, Tone.PolySynth>>(new Map());
+  // VoiceSynth can be either a Soundfont instrument or a Tone.PolySynth fallback
+  const synthsRef = useRef<Map<string, VoiceSynth>>(new Map());
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
   const midiDataRef = useRef<Map<string, Midi>>(new Map());
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -81,14 +92,20 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       const rawDuration = midi.duration;
       if (rawDuration / speedFactor > maxDuration) maxDuration = rawDuration / speedFactor;
 
-      const notes: any[] = [];
+      const notes: Array<{
+        time: number;
+        note: string;
+        duration: number;
+        velocity: number;
+      }> = [];
+
       midi.tracks.forEach(track => {
         track.notes.forEach(note => {
           notes.push({
             time: note.time / speedFactor,
             note: note.name,
             duration: note.duration / speedFactor,
-            velocity: note.velocity,
+            velocity: note.velocity, // 0-1 from @tonejs/midi
           });
         });
       });
@@ -101,7 +118,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
           console.warn(`[MidiPlayer] No synth found for voice "${voice}" at time ${time}`);
           return;
         }
-        synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+        playSynthNote(synth, note.note, note.duration, time, note.velocity);
       }, notes);
 
       part.loop = false;
@@ -123,28 +140,22 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
 
     // Synths created in this run; not moved to synthsRef until all fetches succeed.
     // Cleared after committing so cleanup cannot double-dispose.
-    const pendingSynths = new Map<string, Tone.PolySynth>();
+    const pendingSynths = new Map<string, VoiceSynth>();
 
     const loadMidiFiles = async () => {
       setIsLoading(true);
       setLoadError(null);
+      setLoadingMessage("Loading MIDI files...");
 
       const pendingMidi = new Map<string, Midi>();
       const failed: string[] = [];
 
+      // Step 1: Fetch all MIDI files
       for (const voice of availableVoices) {
         if (voice === "all") continue;
         if (signal.aborted) break;
 
         try {
-          const synth = new Tone.PolySynth(Tone.Synth, {
-            oscillator: { type: "sine" },
-            envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
-          }).toDestination();
-
-          synth.volume.value = -10;
-          pendingSynths.set(voice, synth);
-
           const url = midiUrls[voice];
           if (!url) { failed.push(voice); continue; }
 
@@ -162,6 +173,58 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       }
 
       if (signal.aborted) return;
+
+      // Step 2: Load SoundFont instruments
+      // Use Tone.js's underlying AudioContext so scheduling is unified
+      const audioContext = Tone.getContext().rawContext as AudioContext;
+
+      // Determine unique instrument names needed
+      const instrumentsToLoad = new Set<string>();
+      for (const voice of availableVoices) {
+        if (voice === "all") continue;
+        if (!failed.includes(voice)) {
+          const instrName = VOICE_INSTRUMENTS[voice] || "choir_aahs";
+          instrumentsToLoad.add(instrName);
+        }
+      }
+
+      setLoadingMessage(`Loading choir sounds (${instrumentsToLoad.size} instrument${instrumentsToLoad.size > 1 ? "s" : ""})...`);
+
+      // Load each unique instrument once, then assign to voices
+      const loadedInstruments = new Map<string, VoiceSynth>();
+
+      for (const instrName of Array.from(instrumentsToLoad)) {
+        if (signal.aborted) break;
+        try {
+          const soundfont = await loadSoundfontInstrument(audioContext, instrName);
+          loadedInstruments.set(instrName, { type: "soundfont", instrument: soundfont });
+          console.log(`[MidiPlayer] Loaded SoundFont instrument: ${instrName}`);
+        } catch (err) {
+          if (signal.aborted) break;
+          console.warn(`[MidiPlayer] SoundFont load failed for "${instrName}", falling back to PolySynth:`, err);
+          // Fallback: create a Tone.PolySynth for all voices using this instrument
+          const fallback = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
+          }).toDestination();
+          fallback.volume.value = -10;
+          loadedInstruments.set(instrName, { type: "polySynth", synth: fallback });
+        }
+      }
+
+      if (signal.aborted) return;
+
+      // Assign instruments to voices
+      for (const voice of availableVoices) {
+        if (voice === "all") continue;
+        if (failed.includes(voice)) continue;
+
+        const instrName = VOICE_INSTRUMENTS[voice] || "choir_aahs";
+        const synth = loadedInstruments.get(instrName);
+        if (synth) {
+          pendingSynths.set(voice, synth);
+        }
+      }
 
       // Commit: transfer from pending collections into the stable refs
       pendingMidi.forEach((midi, voice) => midiDataRef.current.set(voice, midi));
@@ -191,8 +254,8 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     return () => {
       controller.abort();
       stopPlayback();
-      pendingSynths.forEach(s => { try { s.dispose(); } catch (_) {} });
-      synthsRef.current.forEach(s => { try { s.dispose(); } catch (_) {} });
+      pendingSynths.forEach(s => disposeSynth(s));
+      synthsRef.current.forEach(s => disposeSynth(s));
       partsRef.current.forEach(p => { try { p.dispose(); } catch (_) {} });
       synthsRef.current.clear();
       partsRef.current.clear();
@@ -214,12 +277,12 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
 
   const startPlayback = async () => {
     console.log("[MidiPlayer] Starting playback...");
-    
+
     const acStateBefore = Tone.Destination.context.state;
     console.log(`[MidiPlayer] AudioContext state before start: ${acStateBefore}`);
-    
+
     await Tone.start();
-    
+
     const acStateAfter = Tone.Destination.context.state;
     console.log(`[MidiPlayer] AudioContext state after start: ${acStateAfter}`);
     console.log(`[MidiPlayer] Parts count: ${partsRef.current.size}`);
@@ -262,6 +325,11 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     isPausedRef.current = true;
     setIsPlaying(false);
 
+    // Stop any currently ringing SoundFont notes
+    synthsRef.current.forEach(synth => {
+      if (synth.type === "soundfont") synth.instrument.stop();
+    });
+
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
@@ -280,10 +348,11 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       progressIntervalRef.current = null;
     }
 
-    // Stop all parts
+    // Stop all parts and all active notes
     partsRef.current.forEach(part => {
       part.stop();
     });
+    synthsRef.current.forEach(synth => stopSynth(synth));
   };
 
   // Keep refs in sync so keyboard handlers always read latest values.
@@ -317,8 +386,9 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
           const updated = prev.map((vc, i) => i === 0 ? { ...vc, muted: !vc.muted } : vc);
           const synth = synthsRef.current.get(target.voice);
           if (synth) {
-            const effectiveMuted = !target.muted || (soloVoiceRef.current !== null && soloVoiceRef.current !== target.voice);
-            synth.volume.value = effectiveMuted ? -Infinity : Tone.gainToDb(target.volume);
+            const newMuted = !target.muted;
+            const effectiveMuted = newMuted || (soloVoiceRef.current !== null && soloVoiceRef.current !== target.voice);
+            setSynthVolume(synth, target.volume, effectiveMuted);
           }
           return updated;
         });
@@ -332,7 +402,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
           if (synth) {
             const newMuted = !target.muted;
             const effectiveMuted = newMuted || (soloVoiceRef.current !== null && soloVoiceRef.current !== target.voice);
-            synth.volume.value = effectiveMuted ? -Infinity : Tone.gainToDb(target.volume);
+            setSynthVolume(synth, target.volume, effectiveMuted);
           }
           return updated;
         });
@@ -364,7 +434,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     const synth = synthsRef.current.get(vc.voice);
     if (!synth) return;
     const effectiveMuted = vc.muted || (currentSolo !== null && currentSolo !== vc.voice);
-    synth.volume.value = effectiveMuted ? -Infinity : Tone.gainToDb(vc.volume);
+    setSynthVolume(synth, vc.volume, effectiveMuted);
   };
 
   const handleSolo = (voice: string) => {
@@ -409,7 +479,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
         <div className="text-center" role="status" aria-live="polite">
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-blue-500 dark:text-blue-400" />
-          <p className="text-sm text-gray-600 dark:text-gray-300">Loading MIDI player...</p>
+          <p className="text-sm text-gray-600 dark:text-gray-300">{loadingMessage}</p>
           <span className="sr-only">Loading musical playback controls</span>
         </div>
       </Card>
@@ -596,4 +666,3 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     </Card>
   );
 }
-
