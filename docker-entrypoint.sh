@@ -19,6 +19,15 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+# Auto-generate INTERNAL_SERVICE_TOKEN if not provided.
+# This ensures the Node <-> Python channel is always authenticated even when
+# the operator forgets to set the variable.  The token is ephemeral (per
+# container instance), which is fine for single-container deployments.
+if [ -z "$INTERNAL_SERVICE_TOKEN" ]; then
+    export INTERNAL_SERVICE_TOKEN=$(openssl rand -hex 32)
+    echo "[entrypoint] Generated INTERNAL_SERVICE_TOKEN for this container instance"
+fi
+
 echo "[entrypoint] Running database migrations..."
 node /app/dist/migrate.js
 echo "[entrypoint] Migrations done."
