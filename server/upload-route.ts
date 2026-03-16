@@ -73,7 +73,7 @@ async function processSheetMusicAsync(
   fileType: "pdf" | "musicxml"
 ): Promise<void> {
   // Emit initial queued event
-  emitProcessingEvent(sheetId, { status: "processing", progress: 0 });
+  emitProcessingEvent(sheetId, "status", { status: "processing", progress: 0 });
 
   // Build multipart request to Python service
   const formData = new FormData();
