@@ -1733,9 +1733,10 @@ async def process_pdf(
             musicxml_path = processor.process_pdf(pdf_path)
             warnings = getattr(processor, '_pdf_warnings', [])
             analysis = processor.analyze_musicxml(musicxml_path)
+            confidence = getattr(processor, '_deep_correction_confidence', None)
             with open(musicxml_path, 'r', encoding="utf-8") as f:
                 musicxml_content = f.read()
-            return {"success": True, "musicxml": musicxml_content, "analysis": analysis, "warnings": warnings}
+            return {"success": True, "musicxml": musicxml_content, "analysis": analysis, "warnings": warnings, "confidence": confidence}
 
     try:
         result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=180)

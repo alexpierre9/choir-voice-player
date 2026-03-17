@@ -13,11 +13,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ArrowLeft, Music, AlertTriangle, Pencil } from "lucide-react";
+import { Loader2, ArrowLeft, Music, AlertTriangle, Pencil, Eye, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getVoiceColors } from "@/lib/voiceColors";
+import type { ConfidenceData } from "@/components/NotationEditor";
 
 const NotationEditor = lazy(() => import("@/components/NotationEditor"));
 
@@ -41,6 +42,7 @@ export default function SheetDetail() {
   const [hasChanges, setHasChanges] = useState(false);
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
   const [isEditing, setIsEditing] = useState(false);
+  const [isReviewing, setIsReviewing] = useState(false);
   const [musicxmlContent, setMusicxmlContent] = useState<string | null>(null);
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
@@ -171,6 +173,7 @@ export default function SheetDetail() {
     onSuccess: () => {
       toast.success("Score updated — regenerating MIDI...");
       setIsEditing(false);
+      setIsReviewing(false);
       setMusicxmlContent(null);
       utils.sheetMusic.get.invalidate({ id: sheetId });
     },
@@ -178,6 +181,21 @@ export default function SheetDetail() {
       toast.error(`Save failed: ${err.message}`);
     },
   });
+
+  const openReviewMode = async () => {
+    if (!sheet) return;
+    if (!musicxmlContent && sheet.musicxmlKey) {
+      try {
+        const res = await fetch(`/files/${sheet.musicxmlKey}`);
+        const xml = await res.text();
+        setMusicxmlContent(xml);
+      } catch {
+        toast.error("Failed to load score for review");
+        return;
+      }
+    }
+    setIsReviewing(true);
+  };
 
   // Initialize voice assignments from sheet data.
   // F-05: guard on !hasChanges so the 3-second poll never overwrites edits the
@@ -305,6 +323,10 @@ export default function SheetDetail() {
   }
 
   const analysis = sheet.analysisResult as any;
+  const deepConfidence = (analysis?.deepCorrectionConfidence ?? null) as ConfidenceData | null;
+  const flaggedCount = deepConfidence
+    ? deepConfidence.per_measure.filter(m => m.confidence < 0.9).length
+    : 0;
   const availableVoices = Object.keys(midiUrls).filter(v => v !== "all");
 
   return (
@@ -408,11 +430,46 @@ export default function SheetDetail() {
                 </div>
               </div>
             )}
+            {/* Deep-correction confidence banner */}
+            {deepConfidence && (
+              flaggedCount > 0 ? (
+                <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-400">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  <span className="text-sm">
+                    ⚠️ {flaggedCount} measure{flaggedCount !== 1 ? "s" : ""} flagged for review
+                  </span>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0 text-yellow-800 dark:text-yellow-400 underline font-medium"
+                    onClick={openReviewMode}
+                  >
+                    Review Score
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 dark:bg-green-900/20 dark:border-green-800 dark:text-green-400">
+                  <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  <span className="text-sm">✅ AI verification passed — all measures high confidence</span>
+                </div>
+              )
+            )}
+
             <Card className="p-6">
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <h2 className="text-xl font-semibold">Voice Assignments</h2>
                   <div className="flex gap-2">
+                    {sheet.musicxmlKey && deepConfidence && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={openReviewMode}
+                      >
+                        <Eye className="h-4 w-4 mr-2" />
+                        Review Score
+                      </Button>
+                    )}
                     {sheet.musicxmlKey && (
                       <Button
                         variant="outline"
@@ -427,7 +484,7 @@ export default function SheetDetail() {
                         }}
                       >
                         <Pencil className="h-4 w-4 mr-2" />
-                        Review &amp; Edit
+                        Edit Score
                       </Button>
                     )}
                     <Button
@@ -546,6 +603,36 @@ export default function SheetDetail() {
               pdfUrl={sheet.originalFileKey ? `/files/${sheet.originalFileKey}` : null}
               onSave={(xml) => updateMusicXMLMutation.mutate({ id: sheetId, musicxml: xml })}
               isSaving={updateMusicXMLMutation.isPending}
+              className="h-[calc(100vh-49px)]"
+            />
+          </div>
+        </Suspense>
+      )}
+
+      {/* Review mode — shows confidence overlays + flag navigation + Approve */}
+      {isReviewing && musicxmlContent && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 bg-background flex items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin" />
+            </div>
+          }
+        >
+          <div className="fixed inset-0 z-50 bg-background">
+            <div className="flex items-center justify-between p-2 border-b">
+              <h3 className="font-semibold">{sheet.title} — Review Score</h3>
+              <Button variant="ghost" size="sm" onClick={() => setIsReviewing(false)}>
+                Close
+              </Button>
+            </div>
+            <NotationEditor
+              musicxml={musicxmlContent}
+              pdfUrl={sheet.originalFileKey ? `/files/${sheet.originalFileKey}` : null}
+              onSave={(xml) => updateMusicXMLMutation.mutate({ id: sheetId, musicxml: xml })}
+              isSaving={updateMusicXMLMutation.isPending}
+              mode="review"
+              confidence={deepConfidence}
+              onApprove={(xml) => updateMusicXMLMutation.mutate({ id: sheetId, musicxml: xml })}
               className="h-[calc(100vh-49px)]"
             />
           </div>

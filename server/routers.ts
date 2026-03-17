@@ -204,6 +204,20 @@ export const appRouter = router({
         return sheet;
       }),
 
+    // Return the deep-correction confidence data stored in analysisResult
+    getConfidence: protectedProcedure
+      .input(z.object({ id: z.string().min(1).max(64) }))
+      .query(async ({ ctx, input }) => {
+        const sheet = await getSheetMusic(input.id);
+        if (!sheet) throw new TRPCError({ code: "NOT_FOUND", message: "Sheet music not found" });
+        if (sheet.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized" });
+        const analysisResult = sheet.analysisResult as any;
+        return (analysisResult?.deepCorrectionConfidence ?? null) as {
+          overall: number;
+          per_measure: Array<{ measure: number; confidence: number; corrections_applied: number }>;
+        } | null;
+      }),
+
     // Rename sheet music
     rename: protectedProcedure
       .input(z.object({
@@ -830,6 +844,10 @@ async function processSheetMusicAsync(
       musicxml: string;
       analysis: any;
       warnings?: string[];
+      confidence?: {
+        overall: number;
+        per_measure: Array<{ measure: number; confidence: number; corrections_applied: number }>;
+      } | null;
     };
 
     if (!result.success) {
@@ -838,6 +856,11 @@ async function processSheetMusicAsync(
 
     if (result.warnings?.length) {
       result.analysis.warnings = result.warnings;
+    }
+
+    // Embed deep-correction confidence data into analysisResult for later retrieval
+    if (result.confidence) {
+      result.analysis.deepCorrectionConfidence = result.confidence;
     }
 
     emitProcessingEvent(sheetId, "processing_step", { step: "Storing score…" });
