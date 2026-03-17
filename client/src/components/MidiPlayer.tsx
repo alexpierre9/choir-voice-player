@@ -15,6 +15,7 @@ import {
   disposeSynth,
   type VoiceSynth,
 } from "@/lib/soundfontPlayer";
+import { usePublishPlayback } from "@/hooks/usePlaybackSync";
 
 interface VoiceControl {
   voice: string;
@@ -46,6 +47,7 @@ const voiceLabels: Record<string, string> = {
 };
 
 export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: MidiPlayerProps) {
+  const publishPlayback = usePublishPlayback();
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -289,10 +291,11 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     setIsPlaying(true);
     console.log("[MidiPlayer] Transport started, playback commenced");
 
-    // Update progress
+    // Update progress + publish to score-following context
     progressIntervalRef.current = setInterval(() => {
       const currentTime = Tone.getTransport().seconds;
       setProgress(currentTime);
+      publishPlayback(currentTime, true, duration);
 
       if (currentTime >= duration) {
         stopPlayback();
@@ -304,6 +307,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     Tone.getTransport().pause();
     isPausedRef.current = true;
     setIsPlaying(false);
+    publishPlayback(Tone.getTransport().seconds, false);
 
     // Stop any currently ringing SoundFont notes
     synthsRef.current.forEach(synth => {
@@ -322,6 +326,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     isPausedRef.current = false; // Next play should be a fresh start, not a resume
     setIsPlaying(false);
     setProgress(0);
+    publishPlayback(0, false);
 
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);

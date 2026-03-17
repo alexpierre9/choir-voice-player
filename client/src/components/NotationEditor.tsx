@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OpenSheetMusicDisplay as OSMD, unitInPixels } from "opensheetmusicdisplay";
+import { usePlaybackSync } from "@/hooks/usePlaybackSync";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
@@ -44,8 +45,8 @@ interface NotationEditorProps {
   onSave: (musicxml: string) => void;
   isSaving?: boolean;
   className?: string;
-  /** "edit" = existing behavior (default). "review" = show confidence overlays + flag navigation. */
-  mode?: "edit" | "review";
+  /** "edit" = existing behavior (default). "review" = show confidence overlays + flag navigation. "follow" = score-following with blue measure highlight. */
+  mode?: "edit" | "review" | "follow";
   /** Deep-correction confidence data from the Python service */
   confidence?: ConfidenceData | null;
   /** Called when the user approves the review. Receives the current XML. */
@@ -97,6 +98,102 @@ const DURATION_LABELS: Record<string, string> = {
   "8": "Eighth",
 };
 
+// ── Measure timing helpers ────────────────────────────────────────────────────
+
+/**
+ * Parse MusicXML to produce an array of measure start times (seconds, 0-indexed).
+ * Uses the first <part> element; handles multi-voice via backup/forward tracking.
+ */
+function buildMeasureTimings(xml: string): number[] {
+  try {
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    const firstPart = doc.querySelector("part");
+    if (!firstPart) return [];
+
+    const measures = Array.from(firstPart.querySelectorAll("measure"));
+    let divisions = 1;
+    let tempo = 120; // default BPM
+    let currentTime = 0;
+    const timings: number[] = [];
+
+    for (const measure of measures) {
+      timings.push(currentTime);
+
+      // Update divisions if the measure changes them
+      const divisionsEl = measure.querySelector("attributes > divisions");
+      if (divisionsEl?.textContent) {
+        const parsed = parseInt(divisionsEl.textContent, 10);
+        if (parsed > 0) divisions = parsed;
+      }
+
+      // Update tempo if a <sound tempo="..."/> directive is present
+      const soundEl = measure.querySelector("sound[tempo]");
+      if (soundEl) {
+        const parsed = parseFloat(soundEl.getAttribute("tempo") ?? "120");
+        if (parsed > 0) tempo = parsed;
+      }
+
+      // Compute duration by tracking the furthest timeline position reached.
+      // backup elements move the cursor backward (multi-voice); forward moves it forward.
+      let position = 0;
+      let maxPosition = 0;
+
+      for (const child of Array.from(measure.children)) {
+        switch (child.tagName) {
+          case "note": {
+            // Chord notes share the previous note's time slot — don't advance
+            if (child.querySelector("chord")) break;
+            const durEl = child.querySelector("duration");
+            if (durEl?.textContent) {
+              position += parseInt(durEl.textContent, 10) || 0;
+              if (position > maxPosition) maxPosition = position;
+            }
+            break;
+          }
+          case "backup": {
+            const durEl = child.querySelector("duration");
+            if (durEl?.textContent) {
+              position -= parseInt(durEl.textContent, 10) || 0;
+              if (position < 0) position = 0;
+            }
+            break;
+          }
+          case "forward": {
+            const durEl = child.querySelector("duration");
+            if (durEl?.textContent) {
+              position += parseInt(durEl.textContent, 10) || 0;
+              if (position > maxPosition) maxPosition = position;
+            }
+            break;
+          }
+        }
+      }
+
+      if (maxPosition > 0) {
+        currentTime += (maxPosition / divisions) * (60 / tempo);
+      }
+    }
+
+    return timings;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Given a current playback time and an array of measure start times,
+ * returns the 0-based index of the measure currently playing (-1 if before start).
+ */
+function findMeasureAtTime(timeSec: number, timings: number[]): number {
+  if (!timings.length || timeSec < 0) return -1;
+  let idx = 0;
+  for (let i = 0; i < timings.length; i++) {
+    if (timings[i] <= timeSec) idx = i;
+    else break;
+  }
+  return idx;
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function NotationEditor({
@@ -133,6 +230,107 @@ export default function NotationEditor({
   useEffect(() => { currentXmlRef.current = currentXml; }, [currentXml]);
   useEffect(() => { undoStackRef.current = undoStack; }, [undoStack]);
   useEffect(() => { redoStackRef.current = redoStack; }, [redoStack]);
+
+  // ── Score-following state ─────────────────────────────────────────────────
+
+  const playbackSync = usePlaybackSync();
+  const currentTimeSec = playbackSync?.currentTimeSec ?? 0;
+
+  /** Pre-computed array of measure start times (seconds). Only built in follow mode. */
+  const measureTimings = useMemo(() => {
+    if (mode !== "follow") return [] as number[];
+    return buildMeasureTimings(currentXml);
+  }, [mode, currentXml]);
+
+  /** Tracks the last measure index we highlighted so we only update DOM on change. */
+  const lastHighlightedMeasureRef = useRef<number>(-1);
+
+  /** Draw (or move) a blue follow overlay onto the current measure. */
+  const drawFollowOverlay = useCallback((measureIndex: number) => {
+    const wrapper = scoreWrapperRef.current;
+    const container = containerRef.current;
+    if (!wrapper || !container || !osmdRef.current) return;
+
+    // Remove stale follow overlay
+    wrapper.querySelectorAll(".follow-overlay").forEach((el) => el.remove());
+
+    if (measureIndex < 0) return;
+
+    const osmd = osmdRef.current as any;
+    const measureList: Array<Array<any>> | undefined = osmd.graphic?.MeasureList;
+    if (!measureList?.length || measureIndex >= measureList.length) return;
+
+    const staveMeasures = measureList[measureIndex];
+    if (!staveMeasures?.length) return;
+
+    const scale = unitInPixels * (osmd.zoom ?? 1);
+    const svgEl = container.querySelector("svg");
+    if (!svgEl) return;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const svgRect = svgEl.getBoundingClientRect();
+    const svgLeft = svgRect.left - wrapperRect.left + wrapper.scrollLeft;
+    const svgTop = svgRect.top - wrapperRect.top + wrapper.scrollTop;
+
+    // Bounding box spanning all staves for this measure column
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    staveMeasures.forEach((gm: any) => {
+      const bb = gm?.PositionAndShape;
+      if (!bb) return;
+      const pos = bb.AbsolutePosition;
+      const sz = bb.Size;
+      if (!pos || !sz) return;
+      minX = Math.min(minX, pos.x);
+      minY = Math.min(minY, pos.y);
+      maxX = Math.max(maxX, pos.x + sz.width);
+      maxY = Math.max(maxY, pos.y + sz.height);
+    });
+    if (!isFinite(minX)) return;
+
+    const left = svgLeft + minX * scale;
+    const top = svgTop + minY * scale;
+    const width = (maxX - minX) * scale;
+    const height = (maxY - minY) * scale;
+
+    const overlay = document.createElement("div");
+    overlay.className = "follow-overlay";
+    overlay.style.cssText = [
+      "position:absolute",
+      `left:${left}px`,
+      `top:${top}px`,
+      `width:${width}px`,
+      `height:${height}px`,
+      "background-color:rgba(59,130,246,0.2)",
+      "border:2px solid rgba(59,130,246,0.5)",
+      "border-radius:2px",
+      "pointer-events:none",
+      "z-index:6",
+      "transition:left 0.1s ease,top 0.1s ease",
+    ].join(";");
+
+    wrapper.appendChild(overlay);
+
+    // Auto-scroll to keep highlighted measure visible (only when measure changes)
+    overlay.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, []);
+
+  // Update follow overlay whenever currentTimeSec changes (in follow mode only)
+  useEffect(() => {
+    if (mode !== "follow" || isRendering) return;
+
+    const measureIndex = findMeasureAtTime(currentTimeSec, measureTimings);
+    if (measureIndex === lastHighlightedMeasureRef.current) return;
+
+    lastHighlightedMeasureRef.current = measureIndex;
+    drawFollowOverlay(measureIndex);
+  }, [currentTimeSec, mode, isRendering, measureTimings, drawFollowOverlay]);
+
+  // Clean up follow overlays when leaving follow mode or on unmount
+  useEffect(() => {
+    if (mode !== "follow") {
+      scoreWrapperRef.current?.querySelectorAll(".follow-overlay").forEach((el) => el.remove());
+      lastHighlightedMeasureRef.current = -1;
+    }
+  }, [mode]);
 
   // ── Confidence helpers ────────────────────────────────────────────────────
 
@@ -604,11 +802,26 @@ export default function NotationEditor({
 
   const noteSelected = selectedNoteIndexRef.current !== null;
   const isReviewMode = mode === "review";
+  const isFollowMode = mode === "follow";
   const overallPct = confidence ? Math.round(confidence.overall * 100) : null;
+
+  // ── Derive current measure label for follow mode ──────────────────────────
+  const followMeasureLabel = isFollowMode && measureTimings.length > 0
+    ? `Measure ${lastHighlightedMeasureRef.current >= 0 ? lastHighlightedMeasureRef.current + 1 : "—"} / ${measureTimings.length}`
+    : null;
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
-      {/* Toolbar */}
+      {/* Toolbar — hidden in follow mode; replaced by a slim "Following" bar */}
+      {isFollowMode ? (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b bg-blue-50 dark:bg-blue-950/30 text-sm text-blue-700 dark:text-blue-300">
+          <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+          <span className="font-medium">Score Following</span>
+          {followMeasureLabel && (
+            <span className="ml-auto font-mono text-xs opacity-70">{followMeasureLabel}</span>
+          )}
+        </div>
+      ) : (
       <div className="flex items-center gap-1 p-2 border-b bg-muted/30 flex-wrap">
         {/* Undo / Redo */}
         <ToolbarButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" onClick={undo} disabled={undoStack.length === 0} />
@@ -764,6 +977,7 @@ export default function NotationEditor({
           Save
         </Button>
       </div>
+      )}
 
       {/* Split view: PDF + OSMD */}
       <div className="flex flex-1 min-h-0 overflow-hidden">

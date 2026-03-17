@@ -13,12 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ArrowLeft, Music, AlertTriangle, Pencil, Eye, CheckCircle2 } from "lucide-react";
+import { Loader2, ArrowLeft, Music, AlertTriangle, Pencil, Eye, CheckCircle2, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 import MidiPlayer from "@/components/MidiPlayer";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getVoiceColors } from "@/lib/voiceColors";
 import type { ConfidenceData } from "@/components/NotationEditor";
+import { PlaybackSyncProvider } from "@/hooks/usePlaybackSync";
 
 const NotationEditor = lazy(() => import("@/components/NotationEditor"));
 
@@ -43,6 +44,7 @@ export default function SheetDetail() {
   const [midiUrls, setMidiUrls] = useState<Record<string, string>>({});
   const [isEditing, setIsEditing] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
+  const [followScore, setFollowScore] = useState(false);
   const [musicxmlContent, setMusicxmlContent] = useState<string | null>(null);
 
   const { data: sheet, isLoading, refetch, status: queryStatus } = trpc.sheetMusic.get.useQuery(
@@ -195,6 +197,20 @@ export default function SheetDetail() {
       }
     }
     setIsReviewing(true);
+  };
+
+  const toggleFollowScore = async () => {
+    if (!followScore && !musicxmlContent && sheet?.musicxmlKey) {
+      try {
+        const res = await fetch(`/files/${sheet.musicxmlKey}`);
+        const xml = await res.text();
+        setMusicxmlContent(xml);
+      } catch {
+        toast.error("Failed to load score");
+        return;
+      }
+    }
+    setFollowScore((prev) => !prev);
   };
 
   // Initialize voice assignments from sheet data.
@@ -570,14 +586,50 @@ export default function SheetDetail() {
 
             {/* MIDI Player */}
             {Object.keys(midiUrls).length > 0 && (
-              <div>
-                <h2 className="text-xl font-semibold mb-4">MIDI Player</h2>
-                <MidiPlayer
-                  midiUrls={midiUrls}
-                  availableVoices={availableVoices}
-                  sheetTitle={sheet.title}
-                />
-              </div>
+              <PlaybackSyncProvider>
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-semibold">MIDI Player</h2>
+                    {sheet.musicxmlKey && (
+                      <Button
+                        variant={followScore ? "default" : "outline"}
+                        size="sm"
+                        onClick={toggleFollowScore}
+                      >
+                        <BookOpen className="h-4 w-4 mr-2" />
+                        {followScore ? "Hide Score" : "Follow Score"}
+                      </Button>
+                    )}
+                  </div>
+                  <MidiPlayer
+                    midiUrls={midiUrls}
+                    availableVoices={availableVoices}
+                    sheetTitle={sheet.title}
+                  />
+                </div>
+
+                {/* Inline score-following view */}
+                {followScore && musicxmlContent && (
+                  <Suspense
+                    fallback={
+                      <div className="flex items-center justify-center h-32">
+                        <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                      </div>
+                    }
+                  >
+                    <div className="mt-4 border rounded-lg overflow-hidden" style={{ height: "480px" }}>
+                      <NotationEditor
+                        musicxml={musicxmlContent}
+                        pdfUrl={null}
+                        onSave={() => {}}
+                        isSaving={false}
+                        mode="follow"
+                        className="h-full"
+                      />
+                    </div>
+                  </Suspense>
+                )}
+              </PlaybackSyncProvider>
             )}
           </>
         )}
