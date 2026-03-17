@@ -347,69 +347,25 @@ class MusicProcessor:
             return "(could not parse parts)"
 
     def _apply_corrections(self, musicxml: str, corrections: list) -> str:
-        """Apply Gemini's targeted corrections to the MusicXML string.
-
-        Uses XML-aware replacement scoped to individual score-part elements by part_id,
-        so corrections for parts that share the same current_value (e.g. all named "Voice")
-        are each applied independently to the correct part only.
-        """
-        try:
-            root = ET.fromstring(musicxml)
-        except ET.ParseError:
-            logger.warning("_apply_corrections: could not parse XML, returning unchanged")
-            return musicxml
-
-        ns_prefix = "{http://www.musicxml.org/ns/}"
-        changed = 0
-
+        """Apply Gemini's targeted corrections to the MusicXML string."""
+        result = musicxml
         for c in corrections:
             ctype = c.get("type", "")
             if ctype == "rename_part":
-                part_id = c.get("part_id", "")
+                current = c.get("current_value", "")
                 correct = c.get("correct_value", "")
-                if not part_id or not correct:
-                    continue
-
-                # Find the specific score-part element by id attribute
-                score_part = None
-                for sp in root.iter(f"{ns_prefix}score-part"):
-                    if sp.get("id") == part_id:
-                        score_part = sp
-                        break
-                if score_part is None:
-                    # Try without namespace
-                    for sp in root.iter("score-part"):
-                        if sp.get("id") == part_id:
-                            score_part = sp
-                            break
-
-                if score_part is None:
-                    logger.warning("rename_part: part_id %s not found in XML", part_id)
-                    continue
-
-                # Update part-name
-                pn = score_part.find(f"{ns_prefix}part-name")
-                if pn is None:
-                    pn = score_part.find("part-name")
-                old_name = pn.text if pn is not None else None
-                if pn is not None:
-                    pn.text = correct
-                    logger.info("Renamed part %s: '%s' → '%s'", part_id, old_name, correct)
-                    changed += 1
-
-                # Update part-abbreviation to first letter
-                pa = score_part.find(f"{ns_prefix}part-abbreviation")
-                if pa is None:
-                    pa = score_part.find("part-abbreviation")
-                if pa is not None:
-                    pa.text = correct[:1]
-
-        if changed == 0:
-            logger.info("_apply_corrections: no changes applied")
-            return musicxml
-
-        # Serialise back to string
-        return ET.tostring(root, encoding="unicode")
+                if current and correct and current != correct:
+                    result = result.replace(
+                        f"<part-name>{current}</part-name>",
+                        f"<part-name>{correct}</part-name>",
+                    )
+                    # Shorten abbreviation to first letter of the new voice name
+                    result = result.replace(
+                        f"<part-abbreviation>{current}</part-abbreviation>",
+                        f"<part-abbreviation>{correct[:1]}</part-abbreviation>",
+                    )
+                    logger.info("Renamed part '%s' → '%s'", current, correct)
+        return result
 
     # ------------------------------------------------------------------
     # Phase 2: measure-by-measure AI deep correction
