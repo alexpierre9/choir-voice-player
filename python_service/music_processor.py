@@ -45,6 +45,8 @@ _config: Dict = {
     "gemini_model_name": os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash"),
     "gemini_max_output_tokens": int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192")),
     "gemini_timeout_s": int(os.environ.get("GEMINI_TIMEOUT", "120")),
+    "deep_correction_enabled": os.environ.get("DEEP_CORRECTION_ENABLED", "true").lower() == "true",
+    "deep_correction_batch_size": int(os.environ.get("DEEP_CORRECTION_BATCH_SIZE", "4")),
 }
 
 # Timeout for Gemini API calls, in seconds (env var uses human-readable seconds;
@@ -409,6 +411,619 @@ class MusicProcessor:
         # Serialise back to string
         return ET.tostring(root, encoding="unicode")
 
+    # ------------------------------------------------------------------
+    # Phase 2: measure-by-measure AI deep correction
+    # ------------------------------------------------------------------
+
+    def _deep_correct_musicxml(self, musicxml_path: str, pdf_path: str) -> str:
+        """Orchestrate measure-by-measure AI cross-validation of MusicXML against the PDF.
+
+        Compares PDF image crops against MusicXML note content for each batch of
+        measures, uses Gemini Vision to detect discrepancies, and applies note-level
+        corrections.  Returns the path to the corrected file, or the original path
+        if any step fails.
+        """
+        if not _config.get("deep_correction_enabled", True):
+            logger.info("[DeepCorrect] Deep correction disabled via config, skipping")
+            return musicxml_path
+
+        if GENAI_CLIENT is None:
+            logger.info("[DeepCorrect] No Gemini client available, skipping")
+            return musicxml_path
+
+        try:
+            with open(musicxml_path, "r", encoding="utf-8") as f:
+                musicxml_text = f.read()
+
+            # Enumerate measures in the first <part>
+            try:
+                root = ET.fromstring(musicxml_text)
+            except ET.ParseError as e:
+                logger.warning("[DeepCorrect] Cannot parse MusicXML: %s", e)
+                return musicxml_path
+
+            # Handle both namespaced and non-namespaced MusicXML
+            ns_prefix = "{http://www.musicxml.org/ns/}"
+            first_part = root.find(f".//{ns_prefix}part")
+            if first_part is None:
+                first_part = root.find(".//part")
+            if first_part is None:
+                logger.warning("[DeepCorrect] No <part> elements found in MusicXML")
+                return musicxml_path
+
+            part_id = first_part.get("id", "P1")
+            measures_in_part = first_part.findall(f"{ns_prefix}measure")
+            if not measures_in_part:
+                measures_in_part = first_part.findall("measure")
+
+            total_measures = len(measures_in_part)
+            if total_measures == 0:
+                logger.warning("[DeepCorrect] No measures found in first part")
+                return musicxml_path
+
+            logger.info(
+                "[DeepCorrect] Starting deep correction: %d measures in part %s",
+                total_measures, part_id,
+            )
+
+            batch_size = int(_config.get("deep_correction_batch_size", 4))
+            all_corrections: list = []
+            per_measure_confidence: list = []
+
+            # Process in batches
+            for batch_start in range(0, total_measures, batch_size):
+                batch_end = min(batch_start + batch_size, total_measures)
+                # MusicXML measure numbers are 1-based; list indices are 0-based
+                measure_numbers = list(range(batch_start + 1, batch_end + 1))
+
+                try:
+                    image_bytes = self._crop_pdf_measures(pdf_path, measure_numbers, total_measures)
+                    snippet = self._extract_musicxml_snippet(musicxml_text, part_id, measure_numbers)
+                    result = self._verify_measure_with_ai(image_bytes, snippet, measure_numbers)
+
+                    corrections = result.get("corrections", [])
+                    confidence = result.get("confidence", 0.5)
+
+                    logger.info(
+                        "[DeepCorrect] Measures %s: confidence=%.2f, corrections=%d",
+                        measure_numbers, confidence, len(corrections),
+                    )
+
+                    all_corrections.extend(corrections)
+                    for mn in measure_numbers:
+                        applied = sum(1 for c in corrections if c.get("measure") == mn)
+                        per_measure_confidence.append({
+                            "measure": mn,
+                            "confidence": confidence,
+                            "corrections_applied": applied,
+                        })
+
+                except Exception as e:
+                    logger.warning(
+                        "[DeepCorrect] Batch %s failed: %s — skipping batch",
+                        measure_numbers, e,
+                    )
+                    for mn in measure_numbers:
+                        per_measure_confidence.append({
+                            "measure": mn,
+                            "confidence": 0.5,
+                            "corrections_applied": 0,
+                        })
+                    continue
+
+            if not all_corrections:
+                logger.info("[DeepCorrect] No corrections needed — MusicXML matches PDF")
+                return musicxml_path
+
+            logger.info("[DeepCorrect] Applying %d total correction(s)", len(all_corrections))
+            corrected_xml = self._apply_deep_corrections(musicxml_text, all_corrections)
+
+            # Validate before writing
+            try:
+                ET.fromstring(corrected_xml)
+            except ET.ParseError as e:
+                logger.warning("[DeepCorrect] Corrected XML invalid (%s), using original", e)
+                return musicxml_path
+
+            corrected_path = os.path.join(self.temp_dir, "deep_corrected_score.xml")
+            with open(corrected_path, "w", encoding="utf-8") as f:
+                f.write(corrected_xml)
+
+            # Store per-measure confidence for the API endpoint
+            self._deep_correction_confidence = {
+                "overall": (
+                    sum(m["confidence"] for m in per_measure_confidence) / len(per_measure_confidence)
+                    if per_measure_confidence else 0.5
+                ),
+                "per_measure": per_measure_confidence,
+            }
+
+            logger.info(
+                "[DeepCorrect] Deep correction complete — %d correction(s) applied, saved to %s",
+                len(all_corrections), corrected_path,
+            )
+            return corrected_path
+
+        except Exception as e:
+            logger.warning("[DeepCorrect] Deep correction failed (%s), returning original", e)
+            return musicxml_path
+
+    def _crop_pdf_measures(
+        self, pdf_path: str, measure_numbers: List[int], total_measures: int
+    ) -> bytes:
+        """Crop the relevant horizontal region of the PDF for the given measure numbers.
+
+        Uses a proportional heuristic: divides the page width equally among all
+        measures and crops the strip corresponding to the requested batch.  For
+        multi-page scores the correct page is selected automatically.
+
+        Returns JPEG bytes of the cropped region, or a full-page render as fallback.
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+
+            # Which page do these measures fall on?
+            measures_per_page = max(1, total_measures / total_pages)
+            # Use the middle measure of the batch to pick the page
+            mid_measure = measure_numbers[len(measure_numbers) // 2]
+            page_index = min(int((mid_measure - 1) / measures_per_page), total_pages - 1)
+
+            page = doc[page_index]
+            page_width = page.rect.width
+            page_height = page.rect.height
+
+            # Measures on this page (1-based)
+            page_start_measure = int(page_index * measures_per_page) + 1
+            measures_on_page = max(1, round(measures_per_page))
+
+            # Normalise measure numbers to position within this page
+            local_first = measure_numbers[0] - page_start_measure
+            local_last = measure_numbers[-1] - page_start_measure
+
+            x0 = max(0.0, local_first / measures_on_page * page_width)
+            x1 = min(page_width, (local_last + 1) / measures_on_page * page_width)
+
+            # Add small horizontal padding so we don't clip barlines
+            padding = page_width * 0.01
+            x0 = max(0.0, x0 - padding)
+            x1 = min(page_width, x1 + padding)
+
+            clip_rect = fitz.Rect(x0, 0, x1, page_height)
+            matrix = fitz.Matrix(200 / 72, 200 / 72)
+            pixmap = page.get_pixmap(clip=clip_rect, matrix=matrix)
+            doc.close()
+            return pixmap.tobytes("jpeg", jpg_quality=85)
+
+        except Exception as e:
+            logger.warning(
+                "[DeepCorrect] Measure crop failed for measures %s (%s) — falling back to full page",
+                measure_numbers, e,
+            )
+            try:
+                doc = fitz.open(pdf_path)
+                total_pages = len(doc)
+                measures_per_page = max(1, total_measures / total_pages)
+                mid_measure = measure_numbers[len(measure_numbers) // 2]
+                page_index = min(int((mid_measure - 1) / measures_per_page), total_pages - 1)
+                page = doc[page_index]
+                matrix = fitz.Matrix(200 / 72, 200 / 72)
+                pixmap = page.get_pixmap(matrix=matrix)
+                doc.close()
+                return pixmap.tobytes("jpeg", jpg_quality=85)
+            except Exception as fallback_err:
+                logger.error("[DeepCorrect] Full-page fallback also failed: %s", fallback_err)
+                raise
+
+    def _extract_musicxml_snippet(
+        self, musicxml_text: str, part_id: str, measure_numbers: List[int]
+    ) -> str:
+        """Extract specific measures from a specific part in the MusicXML.
+
+        Also prepends the <attributes> from measure 1 (key/time sig, clef) so
+        that Gemini has full context even when the batch doesn't start at measure 1.
+        Returns the snippet as an XML string.
+        """
+        try:
+            root = ET.fromstring(musicxml_text)
+        except ET.ParseError as e:
+            logger.warning("[DeepCorrect] Cannot parse MusicXML for snippet extraction: %s", e)
+            return musicxml_text[:4000]
+
+        ns_prefix = "{http://www.musicxml.org/ns/}"
+
+        # Find the requested part
+        target_part = None
+        for part in root.iter(f"{ns_prefix}part"):
+            if part.get("id") == part_id:
+                target_part = part
+                break
+        if target_part is None:
+            for part in root.iter("part"):
+                if part.get("id") == part_id:
+                    target_part = part
+                    break
+        if target_part is None:
+            # Fall back to first part
+            target_part = root.find(f".//{ns_prefix}part")
+            if target_part is None:
+                target_part = root.find(".//part")
+        if target_part is None:
+            return musicxml_text[:4000]
+
+        # Collect requested measures
+        target_numbers_str = {str(n) for n in measure_numbers}
+        selected_measures = []
+        first_measure_attrs = None
+
+        all_measures = target_part.findall(f"{ns_prefix}measure")
+        if not all_measures:
+            all_measures = target_part.findall("measure")
+
+        for measure in all_measures:
+            m_num = measure.get("number", "")
+            # Grab attributes from measure 1 for context
+            if m_num == "1":
+                attrs_el = measure.find(f"{ns_prefix}attributes")
+                if attrs_el is None:
+                    attrs_el = measure.find("attributes")
+                if attrs_el is not None:
+                    first_measure_attrs = attrs_el
+            if m_num in target_numbers_str:
+                selected_measures.append(measure)
+
+        if not selected_measures:
+            logger.warning(
+                "[DeepCorrect] No measures found for numbers %s in part %s",
+                measure_numbers, part_id,
+            )
+            return ""
+
+        # Build a minimal wrapper
+        snippet_lines = [f'<part id="{part_id}">']
+        for measure in selected_measures:
+            measure_copy = copy.deepcopy(measure)
+            # If this is not measure 1 and no attributes present, inject from measure 1
+            if first_measure_attrs is not None and measure_copy.get("number") != "1":
+                existing_attrs = (
+                    measure_copy.find(f"{ns_prefix}attributes")
+                    or measure_copy.find("attributes")
+                )
+                if existing_attrs is None:
+                    measure_copy.insert(0, copy.deepcopy(first_measure_attrs))
+            snippet_lines.append(ET.tostring(measure_copy, encoding="unicode"))
+        snippet_lines.append("</part>")
+        return "\n".join(snippet_lines)
+
+    def _verify_measure_with_ai(
+        self, image_bytes: bytes, musicxml_snippet: str, measure_numbers: List[int]
+    ) -> dict:
+        """Send a PDF image crop + MusicXML snippet to Gemini Vision for cross-validation.
+
+        Returns a dict: {"corrections": [...], "confidence": float, "notes": str}.
+        """
+        if GENAI_CLIENT is None:
+            return {"corrections": [], "confidence": 0.5, "notes": "Gemini client not available"}
+
+        prompt_text = (
+            "You are a music engraving expert. Compare the sheet music IMAGE against this MusicXML snippet.\n\n"
+            f"MusicXML for measures {measure_numbers}:\n"
+            f"{musicxml_snippet}\n\n"
+            "Analyze the image and check if the MusicXML accurately represents what's written.\n\n"
+            "For each discrepancy found, return a correction object:\n"
+            '- "measure": measure number\n'
+            '- "part_id": which part (e.g. "P1")\n'
+            '- "type": one of "wrong_pitch", "wrong_rhythm", "missing_note", "extra_note",'
+            ' "wrong_accidental", "wrong_rest"\n'
+            '- "description": what\'s wrong and what it should be\n'
+            '- "xpath": approximate XPath to the element to fix (e.g. "measure[3]/note[2]/pitch")\n'
+            '- "current_value": what the MusicXML currently has\n'
+            '- "correct_value": what it should be based on the image\n\n'
+            "Also return:\n"
+            '- "confidence": float 0.0-1.0 — how confident you are the MusicXML matches the image'
+            ' (1.0 = perfect match)\n'
+            '- "notes": brief human-readable summary\n\n'
+            "Return ONLY valid JSON, no markdown fences:\n"
+            '{"corrections": [...], "confidence": 0.95, "notes": "Measure 3 has a wrong note..."}'
+        )
+
+        model_name = _config.get("gemini_model_name", "gemini-2.0-flash")
+
+        try:
+            response = GENAI_CLIENT.models.generate_content(
+                model=model_name,
+                contents=[
+                    genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    prompt_text,
+                ],
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=4096,
+                    temperature=0.1,
+                ),
+            )
+
+            response_text = response.text.strip()
+            logger.info(
+                "[DeepCorrect] AI response for measures %s: %s",
+                measure_numbers, response_text[:300],
+            )
+
+            # Strip markdown fences if present
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                response_text = "\n".join(lines).strip()
+
+            result = json.loads(response_text)
+            if not isinstance(result, dict):
+                raise ValueError(f"Expected JSON object, got {type(result)}")
+
+            # Normalise missing keys
+            result.setdefault("corrections", [])
+            result.setdefault("confidence", 0.5)
+            result.setdefault("notes", "")
+            return result
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "[DeepCorrect] Could not parse AI response for measures %s: %s",
+                measure_numbers, e,
+            )
+            return {
+                "corrections": [],
+                "confidence": 0.5,
+                "notes": "AI response could not be parsed",
+            }
+
+    def _apply_deep_corrections(self, musicxml_text: str, all_corrections: list) -> str:
+        """Apply note-level corrections from the AI to the MusicXML.
+
+        Uses ElementTree XML manipulation (never string replacement).  Validates
+        the result before returning; falls back to the original if invalid.
+        """
+        if not all_corrections:
+            return musicxml_text
+
+        try:
+            root = ET.fromstring(musicxml_text)
+        except ET.ParseError as e:
+            logger.warning("[DeepCorrect] Cannot parse MusicXML for corrections: %s", e)
+            return musicxml_text
+
+        ns_prefix = "{http://www.musicxml.org/ns/}"
+        applied = 0
+
+        for correction in all_corrections:
+            ctype = correction.get("type", "")
+            measure_num = str(correction.get("measure", ""))
+            part_id = correction.get("part_id", "")
+            description = correction.get("description", "")
+
+            if not measure_num:
+                continue
+
+            # Locate the target part
+            target_part = None
+            if part_id:
+                for p in root.iter(f"{ns_prefix}part"):
+                    if p.get("id") == part_id:
+                        target_part = p
+                        break
+                if target_part is None:
+                    for p in root.iter("part"):
+                        if p.get("id") == part_id:
+                            target_part = p
+                            break
+            if target_part is None:
+                target_part = root.find(f".//{ns_prefix}part")
+                if target_part is None:
+                    target_part = root.find(".//part")
+            if target_part is None:
+                continue
+
+            # Locate the target measure
+            target_measure = None
+            for m in target_part.iter(f"{ns_prefix}measure"):
+                if m.get("number") == measure_num:
+                    target_measure = m
+                    break
+            if target_measure is None:
+                for m in target_part.iter("measure"):
+                    if m.get("number") == measure_num:
+                        target_measure = m
+                        break
+            if target_measure is None:
+                logger.warning(
+                    "[DeepCorrect] Measure %s not found in part %s — skipping correction",
+                    measure_num, part_id,
+                )
+                continue
+
+            # Collect notes/rests in this measure
+            notes_in_measure = (
+                target_measure.findall(f"{ns_prefix}note")
+                or target_measure.findall("note")
+            )
+
+            try:
+                if ctype == "wrong_pitch":
+                    # Update pitch of the first eligible note
+                    correct_val = correction.get("correct_value", "")
+                    # correct_value format: "C#4" or "D4" or step/octave
+                    for note_el in notes_in_measure:
+                        pitch_el = note_el.find(f"{ns_prefix}pitch") or note_el.find("pitch")
+                        if pitch_el is None:
+                            continue
+                        if correct_val and len(correct_val) >= 2:
+                            # Parse simple pitch notation: e.g. "C#4", "Bb3", "D4"
+                            step = correct_val[0].upper()
+                            rest_str = correct_val[1:]
+                            alter = 0
+                            octave_str = ""
+                            if rest_str.startswith("#"):
+                                alter = 1
+                                octave_str = rest_str[1:]
+                            elif rest_str.startswith("b") or rest_str.startswith("♭"):
+                                alter = -1
+                                octave_str = rest_str[1:]
+                            elif rest_str.startswith("x"):
+                                alter = 2
+                                octave_str = rest_str[1:]
+                            elif rest_str.startswith("bb"):
+                                alter = -2
+                                octave_str = rest_str[2:]
+                            else:
+                                octave_str = rest_str
+
+                            step_el = pitch_el.find(f"{ns_prefix}step") or pitch_el.find("step")
+                            octave_el = pitch_el.find(f"{ns_prefix}octave") or pitch_el.find("octave")
+                            alter_el = pitch_el.find(f"{ns_prefix}alter") or pitch_el.find("alter")
+
+                            if step_el is not None:
+                                step_el.text = step
+                            if octave_el is not None and octave_str.isdigit():
+                                octave_el.text = octave_str
+                            if alter != 0:
+                                if alter_el is None:
+                                    alter_el = ET.SubElement(pitch_el, "alter")
+                                alter_el.text = str(alter)
+                            elif alter_el is not None:
+                                pitch_el.remove(alter_el)
+                        logger.info(
+                            "[DeepCorrect] wrong_pitch applied in measure %s: %s",
+                            measure_num, description,
+                        )
+                        applied += 1
+                        break  # only fix the first note per correction
+
+                elif ctype == "wrong_rhythm":
+                    correct_val = correction.get("correct_value", "")
+                    for note_el in notes_in_measure:
+                        dur_el = note_el.find(f"{ns_prefix}duration") or note_el.find("duration")
+                        type_el = note_el.find(f"{ns_prefix}type") or note_el.find("type")
+                        if dur_el is not None and correct_val:
+                            # correct_value may be a type name like "quarter" or a number
+                            if correct_val.isdigit():
+                                dur_el.text = correct_val
+                            elif type_el is not None:
+                                type_el.text = correct_val
+                        logger.info(
+                            "[DeepCorrect] wrong_rhythm applied in measure %s: %s",
+                            measure_num, description,
+                        )
+                        applied += 1
+                        break
+
+                elif ctype == "wrong_accidental":
+                    correct_val = correction.get("correct_value", "")
+                    for note_el in notes_in_measure:
+                        pitch_el = note_el.find(f"{ns_prefix}pitch") or note_el.find("pitch")
+                        if pitch_el is None:
+                            continue
+                        alter_el = pitch_el.find(f"{ns_prefix}alter") or pitch_el.find("alter")
+                        acc_el = note_el.find(f"{ns_prefix}accidental") or note_el.find("accidental")
+                        accidental_map = {
+                            "#": ("1", "sharp"), "b": ("-1", "flat"),
+                            "sharp": ("1", "sharp"), "flat": ("-1", "flat"),
+                            "natural": ("0", "natural"), "n": ("0", "natural"),
+                            "x": ("2", "double-sharp"), "bb": ("-2", "flat-flat"),
+                        }
+                        if correct_val.lower() in accidental_map:
+                            alter_val, acc_name = accidental_map[correct_val.lower()]
+                            if alter_el is None:
+                                alter_el = ET.SubElement(pitch_el, "alter")
+                            alter_el.text = alter_val
+                            if acc_el is not None:
+                                acc_el.text = acc_name
+                        logger.info(
+                            "[DeepCorrect] wrong_accidental applied in measure %s: %s",
+                            measure_num, description,
+                        )
+                        applied += 1
+                        break
+
+                elif ctype == "extra_note":
+                    # Remove the last note in the measure (best-effort heuristic)
+                    if notes_in_measure:
+                        target_measure.remove(notes_in_measure[-1])
+                        logger.info(
+                            "[DeepCorrect] extra_note removed in measure %s: %s",
+                            measure_num, description,
+                        )
+                        applied += 1
+
+                elif ctype == "missing_note":
+                    # Append a placeholder note (C4 quarter) — human review will refine
+                    correct_val = correction.get("correct_value", "C4")
+                    new_note = ET.SubElement(target_measure, "note")
+                    pitch_el = ET.SubElement(new_note, "pitch")
+                    step_el = ET.SubElement(pitch_el, "step")
+                    step_el.text = correct_val[0].upper() if correct_val else "C"
+                    octave_el = ET.SubElement(pitch_el, "octave")
+                    octave_el.text = correct_val[-1] if correct_val and correct_val[-1].isdigit() else "4"
+                    dur_el = ET.SubElement(new_note, "duration")
+                    dur_el.text = "1"
+                    type_el = ET.SubElement(new_note, "type")
+                    type_el.text = "quarter"
+                    logger.info(
+                        "[DeepCorrect] missing_note inserted in measure %s: %s",
+                        measure_num, description,
+                    )
+                    applied += 1
+
+                elif ctype == "wrong_rest":
+                    # Toggle first note↔rest in the measure
+                    for note_el in notes_in_measure:
+                        rest_el = note_el.find(f"{ns_prefix}rest") or note_el.find("rest")
+                        pitch_el = note_el.find(f"{ns_prefix}pitch") or note_el.find("pitch")
+                        if rest_el is not None and pitch_el is None:
+                            # It's a rest — convert to a placeholder note (C4)
+                            note_el.remove(rest_el)
+                            new_pitch = ET.SubElement(note_el, "pitch")
+                            ET.SubElement(new_pitch, "step").text = "C"
+                            ET.SubElement(new_pitch, "octave").text = "4"
+                        elif pitch_el is not None and rest_el is None:
+                            # It's a note — convert to rest
+                            note_el.remove(pitch_el)
+                            ET.SubElement(note_el, "rest")
+                        logger.info(
+                            "[DeepCorrect] wrong_rest toggled in measure %s: %s",
+                            measure_num, description,
+                        )
+                        applied += 1
+                        break
+
+                else:
+                    logger.info(
+                        "[DeepCorrect] Unknown correction type %r in measure %s — skipping",
+                        ctype, measure_num,
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    "[DeepCorrect] Error applying correction type=%r measure=%s: %s",
+                    ctype, measure_num, e,
+                )
+                continue
+
+        if applied == 0:
+            logger.info("[DeepCorrect] No corrections were applied")
+            return musicxml_text
+
+        corrected = ET.tostring(root, encoding="unicode")
+
+        # Validate before returning
+        try:
+            ET.fromstring(corrected)
+        except ET.ParseError as e:
+            logger.warning("[DeepCorrect] Corrected XML is invalid (%s), returning original", e)
+            return musicxml_text
+
+        logger.info("[DeepCorrect] Applied %d correction(s) successfully", applied)
+        return corrected
+
     def process_pdf(self, pdf_path: str) -> str:
         """Convert PDF to MusicXML using Audiveris OMR. Returns path to generated MusicXML."""
         if not os.path.exists(pdf_path):
@@ -442,6 +1057,14 @@ class MusicProcessor:
                 logger.warning("AI refinement failed, using raw Audiveris output: %s", e)
         else:
             logger.info("No Gemini API key — skipping AI refinement")
+
+        # Step 3: Deep AI cross-validation (note-level corrections)
+        if GENAI_CLIENT is not None:
+            try:
+                musicxml_path = self._deep_correct_musicxml(musicxml_path, pdf_path)
+                logger.info("Deep AI correction completed")
+            except Exception as e:
+                logger.warning("Deep AI correction failed, using previous output: %s", e)
 
         self._pdf_warnings = warnings
         return musicxml_path
@@ -1378,6 +2001,83 @@ async def test_gemini(
         logger.error("Gemini connection test failed: %s", e, exc_info=True)
         category, safe_message = _classify_error(e)
         raise HTTPException(400, detail=json.dumps({
+            "error_category": category,
+            "error_message": safe_message,
+        }))
+
+
+@app.post("/api/deep-correct")
+async def deep_correct(
+    musicxml: str = Form(...),
+    file: UploadFile = File(...),
+    _: None = Depends(verify_internal_token),
+):
+    """Manually re-run the deep AI correction on existing MusicXML + its original PDF.
+
+    Accepts:
+        musicxml (form field): MusicXML content as a string
+        file (upload):         Original PDF used to produce the MusicXML
+
+    Returns corrected MusicXML and per-measure confidence data.
+    """
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "file must be a PDF")
+
+    if len(musicxml) > 50 * 1024 * 1024:
+        raise HTTPException(413, "MusicXML content too large. Maximum size is 50MB")
+
+    pdf_content = await file.read()
+    if len(pdf_content) > 50 * 1024 * 1024:
+        raise HTTPException(413, "PDF too large. Maximum size is 50MB")
+
+    if GENAI_CLIENT is None:
+        raise HTTPException(400, detail=json.dumps({
+            "error_category": "api_key",
+            "error_message": "Gemini API key is not configured. Deep correction requires a Gemini API key.",
+        }))
+
+    def _run():
+        with create_temp_processor() as processor:
+            # Write the uploaded PDF to a temp file
+            pdf_path = os.path.join(processor.temp_dir, "input.pdf")
+            with open(pdf_path, "wb") as f:
+                f.write(pdf_content)
+
+            # Write the provided MusicXML to a temp file
+            musicxml_path = os.path.join(processor.temp_dir, "score_input.xml")
+            with open(musicxml_path, "w", encoding="utf-8") as f:
+                f.write(musicxml)
+
+            corrected_path = processor._deep_correct_musicxml(musicxml_path, pdf_path)
+            with open(corrected_path, "r", encoding="utf-8") as f:
+                corrected_xml = f.read()
+
+            confidence = getattr(processor, "_deep_correction_confidence", {
+                "overall": 0.5,
+                "per_measure": [],
+            })
+
+            return {
+                "success": True,
+                "musicxml": corrected_xml,
+                "confidence": confidence,
+            }
+
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=300)
+        return JSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("Deep correction timed out")
+        raise HTTPException(504, detail=json.dumps({
+            "error_category": "network",
+            "error_message": "Deep correction timed out. The score may be too large — try fewer pages.",
+        }))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error during deep correction: %s", e, exc_info=True)
+        category, safe_message = _classify_error(e)
+        raise HTTPException(500, detail=json.dumps({
             "error_category": category,
             "error_message": safe_message,
         }))
