@@ -4,7 +4,19 @@ import { Midi } from "@tonejs/midi";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Card } from "@/components/ui/card";
-import { Play, Pause, Square, Volume2, VolumeX, Loader2, AlertCircle, Download } from "lucide-react";
+import {
+  Play,
+  Pause,
+  Square,
+  Volume2,
+  VolumeX,
+  Loader2,
+  AlertCircle,
+  Download,
+  Repeat,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { getVoiceColors } from "@/lib/voiceColors";
 import {
   VOICE_INSTRUMENTS,
@@ -46,8 +58,47 @@ const voiceLabels: Record<string, string> = {
   all: "All Voices",
 };
 
+/**
+ * Calculate measure start times (in seconds, adjusted for speed) from MIDI header data.
+ * Uses the header's built-in ticksToSeconds for accurate tempo-aware conversion.
+ */
+function calcMeasureStartTimes(midi: Midi, speedFactor: number): number[] {
+  const ppq = midi.header.ppq;
+  const totalTicks = midi.durationTicks;
+
+  // timeSignatures: Array<{ ticks: number; timeSignature: [numerator, denominator] }>
+  const timeSigs = [...midi.header.timeSignatures].sort((a, b) => a.ticks - b.ticks);
+  if (timeSigs.length === 0) timeSigs.push({ ticks: 0, timeSignature: [4, 4] });
+
+  const measureStarts: number[] = [];
+  let currentTick = 0;
+  let timeSigIdx = 0;
+
+  while (currentTick <= totalTicks + 1) {
+    // Advance to the active time signature
+    while (
+      timeSigIdx + 1 < timeSigs.length &&
+      timeSigs[timeSigIdx + 1].ticks <= currentTick
+    ) {
+      timeSigIdx++;
+    }
+    const [num, denom] = timeSigs[timeSigIdx].timeSignature;
+
+    // header.ticksToSeconds already handles all tempo changes
+    measureStarts.push(midi.header.ticksToSeconds(currentTick) / speedFactor);
+
+    const ticksPerMeasure = Math.round((ppq * 4 * num) / denom);
+    if (ticksPerMeasure <= 0) break; // safety guard against malformed data
+    currentTick += ticksPerMeasure;
+  }
+
+  return measureStarts;
+}
+
 export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: MidiPlayerProps) {
   const publishPlayback = usePublishPlayback();
+
+  // ── Playback state ───────────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -58,19 +109,43 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
   const [loadingMessage, setLoadingMessage] = useState("Loading MIDI player...");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [failedVoices, setFailedVoices] = useState<string[]>([]);
+
+  // ── Transpose state ──────────────────────────────────────────────────────────
+  const [transpose, setTranspose] = useState(0);
+
+  // ── Loop state ───────────────────────────────────────────────────────────────
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [loopStartMeasure, setLoopStartMeasure] = useState(1);
+  const [loopEndMeasure, setLoopEndMeasure] = useState(4);
+  const [totalMeasures, setTotalMeasures] = useState(8);
+  // Derived seconds — kept in state for rendering the visual indicator
+  const [loopStartSeconds, setLoopStartSeconds] = useState(0);
+  const [loopEndSeconds, setLoopEndSeconds] = useState(0);
+
+  // ── Core playback refs ───────────────────────────────────────────────────────
   const isPlayingRef = useRef(false);
   const speedRef = useRef<Speed>(1);
   const soloVoiceRef = useRef<string | null>(null);
-
-  // VoiceSynth can be either a Soundfont instrument or a Tone.PolySynth fallback
   const synthsRef = useRef<Map<string, VoiceSynth>>(new Map());
   const partsRef = useRef<Map<string, Tone.Part>>(new Map());
   const midiDataRef = useRef<Map<string, Midi>>(new Map());
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   // Track whether we're resuming from a pause (true) vs starting fresh (false).
-  // When resuming, the Transport's position and the already-scheduled Part events
-  // are still intact — we must NOT cancel/reset them or playback restarts from 0.
   const isPausedRef = useRef(false);
+
+  // ── Feature refs (readable inside intervals without stale closures) ──────────
+  const transposeRef = useRef(0);
+  const loopEnabledRef = useRef(false);
+  const loopStartSecondsRef = useRef(0);
+  const loopEndSecondsRef = useRef(0);
+  const measureStartTimesRef = useRef<number[]>([]);
+  // Mirror of duration state for use in async handlers
+  const durationRef = useRef(0);
+
+  // ── Sync refs with state ─────────────────────────────────────────────────────
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { soloVoiceRef.current = soloVoice; }, [soloVoice]);
+  useEffect(() => { loopEnabledRef.current = loopEnabled; }, [loopEnabled]);
 
   // Initialize voice controls
   useEffect(() => {
@@ -83,16 +158,41 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     setVoiceControls(controls);
   }, [availableVoices]);
 
-  /** Rebuild Tone.Parts from already-loaded MIDI data at a given speed factor. */
-  const buildParts = (speedFactor: number) => {
+  // Recompute loop boundary seconds whenever the measure selections or measure
+  // timing data changes (totalMeasures / duration act as proxies for the latter).
+  useEffect(() => {
+    const times = measureStartTimesRef.current;
+    if (times.length === 0) return;
+    const startSec = times[loopStartMeasure - 1] ?? 0;
+    // End of loopEndMeasure = start of the *next* measure (or song end)
+    const endSec = times[loopEndMeasure] ?? durationRef.current;
+    loopStartSecondsRef.current = startSec;
+    loopEndSecondsRef.current = endSec;
+    setLoopStartSeconds(startSec);
+    setLoopEndSeconds(endSec);
+  }, [loopStartMeasure, loopEndMeasure, totalMeasures, duration]);
+
+  // ── buildParts ───────────────────────────────────────────────────────────────
+  /**
+   * Rebuild Tone.Parts from already-loaded MIDI data.
+   * @param speedFactor  Playback speed multiplier (0.5 – 1.5).
+   * @param transposeOffset  Semitone shift applied to every note (-12 to +12).
+   */
+  const buildParts = (speedFactor: number, transposeOffset: number = 0) => {
     // Dispose old parts
     partsRef.current.forEach(part => { try { part.dispose(); } catch (_) {} });
     partsRef.current.clear();
 
     let maxDuration = 0;
+    let computedMeasureTimes: number[] = [];
+
     midiDataRef.current.forEach((midi, voice) => {
       const rawDuration = midi.duration;
-      if (rawDuration / speedFactor > maxDuration) maxDuration = rawDuration / speedFactor;
+      const scaledDuration = rawDuration / speedFactor;
+      if (scaledDuration > maxDuration) {
+        maxDuration = scaledDuration;
+        computedMeasureTimes = calcMeasureStartTimes(midi, speedFactor);
+      }
 
       const notes: Array<{
         time: number;
@@ -103,45 +203,66 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
 
       midi.tracks.forEach(track => {
         track.notes.forEach(note => {
+          // Transpose via Tone.js frequency utilities: shift, then convert back to note name
+          const noteName =
+            transposeOffset !== 0
+              ? Tone.Frequency(note.name).transpose(transposeOffset).toNote()
+              : note.name;
+
           notes.push({
             time: note.time / speedFactor,
-            note: note.name,
+            note: noteName,
             duration: note.duration / speedFactor,
             velocity: note.velocity, // 0-1 from @tonejs/midi
           });
         });
       });
 
-      console.log(`[MidiPlayer] Building part for "${voice}": ${notes.length} notes, duration: ${(rawDuration / speedFactor).toFixed(2)}s`);
+      console.log(
+        `[MidiPlayer] Building part "${voice}": ${notes.length} notes, ` +
+        `duration: ${scaledDuration.toFixed(2)}s, transpose: ${transposeOffset > 0 ? "+" : ""}${transposeOffset}`
+      );
 
-      const part = new Tone.Part((time, note) => {
-        const synth = synthsRef.current.get(voice);
-        if (!synth) {
-          console.warn(`[MidiPlayer] No synth found for voice "${voice}" at time ${time}`);
-          return;
-        }
-        playSynthNote(synth, note.note, note.duration, time, note.velocity);
-      }, notes);
+      const part = new Tone.Part<{
+        time: number;
+        note: string;
+        duration: number;
+        velocity: number;
+      }>(
+        (time, n) => {
+          const synth = synthsRef.current.get(voice);
+          if (!synth) {
+            console.warn(`[MidiPlayer] No synth found for voice "${voice}" at time ${time}`);
+            return;
+          }
+          playSynthNote(synth, n.note, n.duration, time, n.velocity);
+        },
+        notes,
+      );
 
       part.loop = false;
       partsRef.current.set(voice, part);
     });
 
     setDuration(maxDuration);
-    console.log(`[MidiPlayer] buildParts complete: ${partsRef.current.size} parts, maxDuration: ${maxDuration.toFixed(2)}s`);
+    durationRef.current = maxDuration;
+
+    // Persist measure timing data for loop calculations
+    measureStartTimesRef.current = computedMeasureTimes;
+    setTotalMeasures(computedMeasureTimes.length);
+
+    console.log(
+      `[MidiPlayer] buildParts complete: ${partsRef.current.size} parts, ` +
+      `maxDuration: ${maxDuration.toFixed(2)}s, measures: ${computedMeasureTimes.length}`
+    );
   };
 
-  // Load MIDI files (network fetch + synth creation — done once per midiUrls change)
+  // ── Load MIDI files ──────────────────────────────────────────────────────────
   // F-04: use AbortController to cancel in-flight fetches when deps change.
-  // Synths are tracked in `pendingSynths` and NOT committed to synthsRef until
-  // after ALL fetches complete — this ensures the cleanup can dispose uncommitted
-  // synths without double-disposing synths from a previous, already-committed run.
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
-    // Synths created in this run; not moved to synthsRef until all fetches succeed.
-    // Cleared after committing so cleanup cannot double-dispose.
     const pendingSynths = new Map<string, VoiceSynth>();
 
     const loadMidiFiles = async () => {
@@ -177,13 +298,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       if (signal.aborted) return;
 
       // Step 2: Load SoundFont instruments
-      // Use Tone.js's underlying AudioContext so scheduling is unified
       const audioContext = Tone.getContext().rawContext as AudioContext;
-
-      // Load a SEPARATE SoundFont instance per voice.
-      // Even if soprano & alto both use "choir_aahs", they need independent
-      // instances so volume/mute/solo controls work independently.
-      // The browser caches the underlying .sf2 fetch — no duplicate downloads.
       const voicesToLoad = availableVoices.filter(v => v !== "all" && !failed.includes(v));
       setLoadingMessage(`Loading choir sounds (${voicesToLoad.length} voice${voicesToLoad.length > 1 ? "s" : ""})...`);
 
@@ -211,7 +326,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       // Commit: transfer from pending collections into the stable refs
       pendingMidi.forEach((midi, voice) => midiDataRef.current.set(voice, midi));
       pendingSynths.forEach((synth, voice) => synthsRef.current.set(voice, synth));
-      pendingSynths.clear(); // mark as committed so cleanup won't double-dispose
+      pendingSynths.clear();
 
       console.log(`[MidiPlayer] Loaded MIDI for voices: ${Array.from(midiDataRef.current.keys()).join(", ")}`);
       if (failed.length > 0) console.warn(`[MidiPlayer] Failed to load voices: ${failed.join(", ")}`);
@@ -222,7 +337,7 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
         setLoadError("Failed to load MIDI files. Please refresh the page and try again.");
       }
 
-      buildParts(speedRef.current);
+      buildParts(speedRef.current, transposeRef.current);
       console.log(`[MidiPlayer] Built ${partsRef.current.size} playable parts`);
       setIsLoading(false);
     };
@@ -231,8 +346,6 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       loadMidiFiles();
     }
 
-    // Cleanup: abort any in-flight fetch, dispose uncommitted synths (aborted run),
-    // then dispose committed synths from a previously completed run.
     return () => {
       controller.abort();
       stopPlayback();
@@ -252,52 +365,53 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
   // Rebuild parts when speed changes (MIDI data already loaded)
   useEffect(() => {
     speedRef.current = speed;
-    if (midiDataRef.current.size === 0) return; // not loaded yet
+    if (midiDataRef.current.size === 0) return;
     stopPlayback();
-    buildParts(speed);
+    buildParts(speed, transposeRef.current);
   }, [speed]);
 
+  // ── Playback engine ──────────────────────────────────────────────────────────
+
+  /** Start or resume playback. Captures duration snapshot for the interval. */
   const startPlayback = async () => {
     console.log("[MidiPlayer] Starting playback...");
 
-    const acStateBefore = Tone.Destination.context.state;
-    console.log(`[MidiPlayer] AudioContext state before start: ${acStateBefore}`);
-
     await Tone.start();
 
-    const acStateAfter = Tone.Destination.context.state;
-    console.log(`[MidiPlayer] AudioContext state after start: ${acStateAfter}`);
-    console.log(`[MidiPlayer] Parts count: ${partsRef.current.size}`);
-    console.log(`[MidiPlayer] Synths available: ${Array.from(synthsRef.current.keys()).join(", ")}`);
-
     if (!isPausedRef.current) {
-      // Fresh start (or after Stop): cancel any previously scheduled events and
-      // reset the transport position so playback begins at the start.
-      // This prevents doubled notes if the user plays → stops → plays again.
       Tone.getTransport().cancel(0);
       Tone.getTransport().seconds = 0;
-
-      // (Re-)schedule all parts from beat 0
       partsRef.current.forEach((part, voice) => {
         console.log(`[MidiPlayer] Starting part: ${voice}`);
         part.start(0);
       });
     }
-    // If isPausedRef.current === true, the Transport position and scheduled Part
-    // events were preserved by pause() — just call start() to resume in place.
 
     isPausedRef.current = false;
     Tone.getTransport().start();
     setIsPlaying(true);
     console.log("[MidiPlayer] Transport started, playback commenced");
 
-    // Update progress + publish to score-following context
+    // Snapshot current duration for the interval closure (avoids stale-closure issues
+    // if duration state is mutated mid-playback, which only happens on rebuild anyway).
+    const dur = durationRef.current;
+
     progressIntervalRef.current = setInterval(() => {
       const currentTime = Tone.getTransport().seconds;
       setProgress(currentTime);
-      publishPlayback(currentTime, true, duration);
+      publishPlayback(currentTime, true, dur);
 
-      if (currentTime >= duration) {
+      // Loop check — runs every 100 ms
+      if (
+        loopEnabledRef.current &&
+        loopEndSecondsRef.current > 0 &&
+        currentTime >= loopEndSecondsRef.current
+      ) {
+        Tone.getTransport().seconds = loopStartSecondsRef.current;
+        return; // skip the end-of-song check this tick
+      }
+
+      if (currentTime >= dur) {
         stopPlayback();
       }
     }, 100);
@@ -309,7 +423,6 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     setIsPlaying(false);
     publishPlayback(Tone.getTransport().seconds, false);
 
-    // Stop any currently ringing SoundFont notes
     synthsRef.current.forEach(synth => {
       if (synth.type === "soundfont") synth.instrument.stop();
     });
@@ -322,8 +435,8 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
 
   const stopPlayback = () => {
     Tone.getTransport().stop();
-    Tone.getTransport().seconds = 0; // Reset position so replay starts from beginning
-    isPausedRef.current = false; // Next play should be a fresh start, not a resume
+    Tone.getTransport().seconds = 0;
+    isPausedRef.current = false;
     setIsPlaying(false);
     setProgress(0);
     publishPlayback(0, false);
@@ -333,18 +446,87 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       progressIntervalRef.current = null;
     }
 
-    // Stop all parts and all active notes
-    partsRef.current.forEach(part => {
-      part.stop();
-    });
+    partsRef.current.forEach(part => { part.stop(); });
     synthsRef.current.forEach(synth => stopSynth(synth));
   };
 
-  // Keep refs in sync so keyboard handlers always read latest values.
+  // ── Transpose handler ────────────────────────────────────────────────────────
+  /**
+   * Change the transpose offset by `delta` semitones.
+   * If playing, pauses → rebuilds parts → resumes from the same position.
+   */
+  const handleTransposeChange = (delta: number) => {
+    const newTranspose = Math.max(-12, Math.min(12, transposeRef.current + delta));
+    if (newTranspose === transposeRef.current) return;
+
+    const wasPlaying = isPlayingRef.current;
+    const currentPos = Tone.getTransport().seconds;
+
+    // Soft-pause: halt transport + clear interval but keep position
+    if (wasPlaying) {
+      Tone.getTransport().pause();
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+      synthsRef.current.forEach(synth => {
+        if (synth.type === "soundfont") synth.instrument.stop();
+      });
+    }
+
+    // Tear down current Parts (required before rebuilding with new pitch)
+    partsRef.current.forEach(part => { try { part.stop(); } catch (_) {} });
+    Tone.getTransport().cancel(0);
+
+    // Commit new transpose value
+    transposeRef.current = newTranspose;
+    setTranspose(newTranspose);
+
+    // Rebuild with new pitch
+    buildParts(speedRef.current, newTranspose);
+
+    if (wasPlaying || isPausedRef.current) {
+      // Re-schedule all new parts from Transport time 0, then seek to saved position
+      partsRef.current.forEach(part => part.start(0));
+      Tone.getTransport().seconds = currentPos;
+
+      if (wasPlaying) {
+        Tone.getTransport().start();
+        setIsPlaying(true);
+        isPlayingRef.current = true;
+        isPausedRef.current = false;
+
+        const dur = durationRef.current;
+        progressIntervalRef.current = setInterval(() => {
+          const ct = Tone.getTransport().seconds;
+          setProgress(ct);
+          publishPlayback(ct, true, dur);
+
+          if (
+            loopEnabledRef.current &&
+            loopEndSecondsRef.current > 0 &&
+            ct >= loopEndSecondsRef.current
+          ) {
+            Tone.getTransport().seconds = loopStartSecondsRef.current;
+            return;
+          }
+
+          if (ct >= dur) stopPlayback();
+        }, 100);
+      } else {
+        // Was paused: remain paused at the same position
+        isPausedRef.current = true;
+        setProgress(currentPos);
+      }
+    }
+  };
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { soloVoiceRef.current = soloVoice; }, [soloVoice]);
 
-  // Keyboard shortcuts (skip when focus is inside a text input)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -364,7 +546,6 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
         Tone.getTransport().seconds = prev;
         setProgress(prev);
       } else if (e.key === "m" || e.key === "M") {
-        // Toggle mute on the first non-failed voice
         setVoiceControls(prev => {
           if (prev.length === 0) return prev;
           const target = prev[0];
@@ -395,19 +576,15 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [duration]); // re-register when duration changes (needed for ArrowRight clamp)
+  }, [duration]);
+
+  // ── UI handlers ──────────────────────────────────────────────────────────────
 
   const handlePlayPause = () => {
-    if (isPlaying) {
-      pausePlayback();
-    } else {
-      startPlayback();
-    }
+    if (isPlaying) pausePlayback(); else startPlayback();
   };
 
-  const handleStop = () => {
-    stopPlayback();
-  };
+  const handleStop = () => { stopPlayback(); };
 
   const handleProgressChange = (value: number[]) => {
     const newTime = value[0];
@@ -459,6 +636,24 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
+  // ── Loop measure helpers ─────────────────────────────────────────────────────
+
+  const handleLoopStartChange = (value: string) => {
+    const n = parseInt(value, 10);
+    if (isNaN(n)) return;
+    const clamped = Math.max(1, Math.min(n, loopEndMeasure - 1));
+    setLoopStartMeasure(clamped);
+  };
+
+  const handleLoopEndChange = (value: string) => {
+    const n = parseInt(value, 10);
+    if (isNaN(n)) return;
+    const clamped = Math.max(loopStartMeasure + 1, Math.min(n, Math.max(totalMeasures, 1)));
+    setLoopEndMeasure(clamped);
+  };
+
+  // ── Early-return states ──────────────────────────────────────────────────────
+
   if (isLoading) {
     return (
       <Card className="p-6 dark:bg-gray-800 dark:border-gray-700">
@@ -481,6 +676,12 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
       </Card>
     );
   }
+
+  // Percentages for the loop region overlay on the progress slider
+  const loopStartPct = duration > 0 ? (loopStartSeconds / duration) * 100 : 0;
+  const loopEndPct = duration > 0 ? (loopEndSeconds / duration) * 100 : 0;
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <Card className="p-6 space-y-6 dark:bg-gray-800 dark:border-gray-700">
@@ -531,17 +732,30 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
           </div>
         </div>
 
-        {/* Progress Bar */}
-        <div className="space-y-2">
-          <Slider
-            value={[progress]}
-            max={duration}
-            step={0.1}
-            onValueChange={handleProgressChange}
-            className="w-full"
-            aria-label="Playback progress"
-            aria-valuetext={`${formatTime(progress)} of ${formatTime(duration)}`}
-          />
+        {/* Progress Bar with optional loop region overlay */}
+        <div className="space-y-1">
+          <div className="relative">
+            {/* Loop region visual indicator */}
+            {loopEnabled && duration > 0 && (
+              <div
+                aria-hidden="true"
+                className="absolute top-1/2 -translate-y-1/2 h-2 pointer-events-none rounded-full bg-blue-400/35 border border-blue-400/60"
+                style={{
+                  left: `${loopStartPct}%`,
+                  width: `${Math.max(0, loopEndPct - loopStartPct)}%`,
+                }}
+              />
+            )}
+            <Slider
+              value={[progress]}
+              max={duration}
+              step={0.1}
+              onValueChange={handleProgressChange}
+              className="w-full"
+              aria-label="Playback progress"
+              aria-valuetext={`${formatTime(progress)} of ${formatTime(duration)}`}
+            />
+          </div>
         </div>
 
         {/* Speed Control */}
@@ -559,6 +773,107 @@ export default function MidiPlayer({ midiUrls, availableVoices, sheetTitle }: Mi
               {s}×
             </Button>
           ))}
+        </div>
+
+        {/* Loop & Transpose Row */}
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          {/* ── Loop Controls ─────────────────────────────────────────────── */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Toggle button */}
+            <Button
+              variant={loopEnabled ? "default" : "outline"}
+              size="sm"
+              className={`h-7 px-2 gap-1.5 text-xs ${loopEnabled ? "bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700" : "dark:border-gray-600 dark:text-white"}`}
+              onClick={() => setLoopEnabled(prev => !prev)}
+              aria-pressed={loopEnabled}
+              aria-label={loopEnabled ? "Disable loop" : "Enable loop"}
+            >
+              <Repeat className="h-3 w-3" />
+              Loop
+            </Button>
+
+            {/* Measure range inputs — always visible so user can configure before enabling */}
+            <span className="text-xs text-muted-foreground dark:text-gray-400">From</span>
+            <input
+              type="number"
+              min={1}
+              max={Math.max(1, loopEndMeasure - 1)}
+              value={loopStartMeasure}
+              onChange={e => handleLoopStartChange(e.target.value)}
+              disabled={!loopEnabled}
+              className={`w-14 h-7 rounded border text-xs text-center bg-transparent dark:text-white dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 ${loopEnabled ? "border-gray-300" : "border-gray-200 opacity-50 dark:border-gray-700"}`}
+              aria-label="Loop start measure"
+            />
+            <span className="text-xs text-muted-foreground dark:text-gray-400">to</span>
+            <input
+              type="number"
+              min={loopStartMeasure + 1}
+              max={Math.max(loopStartMeasure + 1, totalMeasures)}
+              value={loopEndMeasure}
+              onChange={e => handleLoopEndChange(e.target.value)}
+              disabled={!loopEnabled}
+              className={`w-14 h-7 rounded border text-xs text-center bg-transparent dark:text-white dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 ${loopEnabled ? "border-gray-300" : "border-gray-200 opacity-50 dark:border-gray-700"}`}
+              aria-label="Loop end measure"
+            />
+            {totalMeasures > 0 && (
+              <span className="text-[10px] text-muted-foreground/60 dark:text-gray-500">
+                / {totalMeasures}
+              </span>
+            )}
+          </div>
+
+          {/* ── Transpose Controls ────────────────────────────────────────── */}
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-xs text-muted-foreground dark:text-gray-400">Transpose:</span>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 w-7 p-0 dark:border-gray-600 dark:text-white"
+              onClick={() => handleTransposeChange(-1)}
+              disabled={transpose <= -12}
+              aria-label="Transpose down one semitone"
+            >
+              <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+
+            <span
+              className={`w-8 text-center text-sm font-mono font-medium tabular-nums ${
+                transpose === 0
+                  ? "text-muted-foreground dark:text-gray-400"
+                  : transpose > 0
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-rose-600 dark:text-rose-400"
+              }`}
+              aria-live="polite"
+              aria-label={`Current transpose: ${transpose > 0 ? "+" : ""}${transpose} semitones`}
+            >
+              {transpose > 0 ? `+${transpose}` : transpose}
+            </span>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 w-7 p-0 dark:border-gray-600 dark:text-white"
+              onClick={() => handleTransposeChange(1)}
+              disabled={transpose >= 12}
+              aria-label="Transpose up one semitone"
+            >
+              <ChevronUp className="h-3.5 w-3.5" />
+            </Button>
+
+            {transpose !== 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-1.5 text-xs text-muted-foreground dark:text-gray-400"
+                onClick={() => handleTransposeChange(-transpose)}
+                aria-label="Reset transpose to zero"
+              >
+                Reset
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
