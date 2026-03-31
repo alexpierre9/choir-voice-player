@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import LyricsPanel from "@/components/LyricsPanel";
+import { parseLyricsFromMusicXML } from "@/utils/lyricsParser";
 import {
   Undo2,
   Redo2,
@@ -18,6 +20,7 @@ import {
   Music,
   Flag,
   CheckCircle2,
+  BookOpen,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -216,6 +219,7 @@ export default function NotationEditor({
   const [tooltipInfo, setTooltipInfo] = useState<TooltipInfo | null>(null);
   const [currentFlagIndex, setCurrentFlagIndex] = useState(0);
   const [isApproved, setIsApproved] = useState(false);
+  const [showLyrics, setShowLyrics] = useState(false);
 
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
@@ -225,6 +229,7 @@ export default function NotationEditor({
   const currentXmlRef = useRef(currentXml);
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
+  const parsedLyricsRef = useRef(parseLyricsFromMusicXML(currentXml));
 
   // Keep refs in sync
   useEffect(() => { currentXmlRef.current = currentXml; }, [currentXml]);
@@ -241,6 +246,11 @@ export default function NotationEditor({
     if (mode !== "follow") return [] as number[];
     return buildMeasureTimings(currentXml);
   }, [mode, currentXml]);
+
+  /** Parse lyrics from MusicXML whenever it changes */
+  useMemo(() => {
+    parsedLyricsRef.current = parseLyricsFromMusicXML(currentXml);
+  }, [currentXml]);
 
   /** Tracks the last measure index we highlighted so we only update DOM on change. */
   const lastHighlightedMeasureRef = useRef<number>(-1);
@@ -840,6 +850,16 @@ export default function NotationEditor({
 
         <Separator orientation="vertical" className="mx-1 h-6" />
 
+        {/* Lyrics */}
+        <ToolbarButton
+          icon={BookOpen}
+          label="Lyrics"
+          onClick={() => setShowLyrics(!showLyrics)}
+          active={showLyrics}
+        />
+
+        <Separator orientation="vertical" className="mx-1 h-6" />
+
         {/* Durations */}
         {Object.entries(DURATION_LABELS).map(([key, label]) => (
           <Tooltip key={key}>
@@ -1023,6 +1043,25 @@ export default function NotationEditor({
           )}
         </div>
       </div>
+
+      {/* Lyrics panel */}
+      <LyricsPanel
+        lyrics={parsedLyricsRef.current.fullText}
+        isOpen={showLyrics}
+        onClose={() => setShowLyrics(false)}
+        activeMeasure={
+          isFollowMode && measureTimings.length > 0
+            ? lastHighlightedMeasureRef.current + 1
+            : undefined
+        }
+        measureBounds={
+          parsedLyricsRef.current.measures.map((m) => ({
+            measure: m.measure,
+            x: 0,
+            width: 0,
+          })) || []
+        }
+      />
     </div>
   );
 }
